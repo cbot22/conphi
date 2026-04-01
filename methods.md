@@ -19,13 +19,9 @@ Estimates are updated each April and October, in line with the IMF's twice-yearl
 publication of economic indicators.
 
 ---
-
 ## Data Sources
-
 The model uses publicly available data only.
-
 ### Consumption Surveys
-
 At the core of the system is the **World Bank Poverty and Inequality Platform (PIP)**
 dataset, which contains household consumption-expenditure estimates for each percentile
 of the population across over 100 countries and more than 1,000 surveys conducted since
