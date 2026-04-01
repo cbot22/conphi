@@ -1,4 +1,4 @@
-# 🧭 User Guide — Con φ Consumption Distribution Explorer
+# User Guide — Con φ Consumption Distribution Explorer
 
 Con φ (Conphi) is a Bayesian consumption distribution nowcasting and forecasting system. This guide explains how to use the dashboard and use the controls effectively.
 
@@ -9,13 +9,13 @@ Con φ (Conphi) is a Bayesian consumption distribution nowcasting and forecastin
 ### 📖 Overview & Methods
 A plain-language description of the Con φ methodology, covering how the two sub-models work, what data they use, and how outputs should be interpreted. Start here if you are new to the system.
 
-### 🌍 Results Explorer
+### Results Explorer
 Shows predicted consumption distributions (and observed survey distributions where available) as a curve across percentiles for the selected country, year, and model. Use this tab to inspect individual country trajectories or browse aggregate patterns across the full portfolio.
 
-### 📊 Model Performance
+### Model Performance
 Diagnostic summaries of how well each model performs against held-out survey data. Includes observed vs predicted scatterplots, error breakdowns by region, income group, year, and percentile, residual distributions, and coverage calibration charts. Use this tab to understand model reliability and identify where predictions should be treated with more caution.
 
-### 📐 Predictor Analysis
+### Predictor Analysis
 Detailed inspection of the model's learned parameters. For USE, this shows how GDP passthrough coefficients evolve across rolling target years. For WASE, this shows the coefficient forest plot, predictor signal-to-noise ratios, and RBF spline weights. Use this tab to understand what is driving predictions and which predictors have strong vs weak empirical support.
 
 ---
