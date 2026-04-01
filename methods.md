@@ -32,8 +32,6 @@ used in training.
 The table below shows the number of distinct PIP surveys available in training data
 up to each target year:
 
-<div style="font-size: 0.82rem; margin: 0.8rem 0 1.2rem 0;">
-
 | Target Year | Surveys in Training | Countries Covered |
 |:-----------:|:-------------------:|:-----------------:|
 | 2015        | 687                 | 113               |
@@ -48,8 +46,7 @@ up to each target year:
 | 2024        | 927                 | 123               |
 | 2025        | 928                 | 123               |
 
-</div>
-<div style="font-size: 0.78rem; color: #56798D; margin: -0.8rem 0 1.2rem 0;"><em>Surveys are counted as distinct national-level country-year combinations with observed consumption outcomes within a comparable spell.</em></div>
+Surveys are counted as distinct national-level country-year combinations with observed consumption outcomes within a comparable spell
 
 ### Economic Indicators
 
