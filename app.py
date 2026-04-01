@@ -3,18 +3,9 @@
 Con φ v1 — Consumption Distribution Explorer
 =============================================
 Streamlit dashboard for Con φ v1 model outputs.
+Data is read from Google Cloud Storage bucket: conphi
 
-PATH CONFIGURATION
-------------------
-DATA_DIR is derived relative to this file's location.
-Place this script at:
-  G:\\My Drive\\conphi\\conphi_dashboard\\app.py
-
-Data is expected at:
-  G:\\My Drive\\conphi\\outputs\\conphi_v1_report\\
-
-To run:
-  cd "G:\\My Drive\\conphi\\conphi_dashboard"
+To run locally (with GCS credentials):
   streamlit run app.py
 """
 
@@ -26,13 +17,10 @@ import plotly.graph_objects as go
 import plotly.express as px
 
 # ============================================================
-# PATHS  — all relative to this script's location
+# PATHS & GCS CONFIGURATION
 # ============================================================
 VERSION       = "v1"
 SCRIPT_DIR    = Path(__file__).resolve().parent
-DATA_DIR      = SCRIPT_DIR.parent / "outputs" / f"conphi_{VERSION}_report"
-DIAG_USE_DIR  = DATA_DIR / "diagnostics_use"
-DIAG_WASE_DIR = DATA_DIR / "diagnostics_wase"
 METHODS_FILE  = SCRIPT_DIR / "methods.md"
 
 # ============================================================
@@ -198,53 +186,6 @@ def r2_from_cols(obs, pred):
     return float(1 - ss_r / ss_t) if ss_t > 1e-8 else np.nan
 
 # ============================================================
-# DATA LOADERS
-# ============================================================
-@st.cache_data
-def load_fact():
-    fp = DATA_DIR / "fact_predictions.parquet"
-    if not fp.exists():
-        return None
-    return pd.read_parquet(fp)
-
-@st.cache_data
-def load_country_dim():
-    fp = DATA_DIR / "dim_country.parquet"
-    if not fp.exists():
-        return None
-    return pd.read_parquet(fp)
-
-@st.cache_data
-def load_diag_parquet(model: str, name: str):
-    base = DIAG_USE_DIR if model == "USE" else DIAG_WASE_DIR
-    fp   = base / name
-    if not fp.exists():
-        return None
-    return pd.read_parquet(fp)
-
-@st.cache_data
-def load_diag_residuals(model: str):
-    prefix = "use" if model == "USE" else "wase"
-    return load_diag_parquet(model, f"{prefix}_diag_residuals.parquet")
-
-@st.cache_data
-def load_diag_params(model: str):
-    if model == "USE":
-        return load_diag_parquet(model, "use_diag_params_over_time.parquet")
-    else:
-        return load_diag_parquet(model, "wase_diag_params_forest.parquet")
-
-@st.cache_data
-def load_diag_coverage(model: str):
-    prefix = "use" if model == "USE" else "wase"
-    return load_diag_parquet(model, f"{prefix}_diag_coverage.parquet")
-
-@st.cache_data
-def load_diag_country_mae(model: str):
-    prefix = "use" if model == "USE" else "wase"
-    return load_diag_parquet(model, f"{prefix}_diag_country_mae.parquet")
-
-# ============================================================
 # APP CONFIG
 # ============================================================
 st.set_page_config(
@@ -318,8 +259,8 @@ country_dim = load_country_dim()
 
 if fact is None:
     st.error(
-        f"Could not load `fact_predictions.parquet` from:\n\n`{DATA_DIR}`\n\n"
-        "Check that the dashboard folder is in the right place relative to your data."
+        f"Could not load `fact_predictions.parquet` from GCS bucket `{BUCKET}`.\n\n"
+        "Check that the bucket exists, files have been uploaded, and secrets are configured correctly."
     )
     st.stop()
 
