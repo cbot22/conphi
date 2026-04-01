@@ -53,9 +53,7 @@ up to each target year:
 | 2025        | 928                 | 123               |
 
 </div>
-
-<small>*Surveys are counted as distinct national-level country-year combinations with
-observed consumption outcomes within a comparable spell.*</small>
+<div style="font-size: 0.78rem; color: #56798D; margin: -0.8rem 0 1.2rem 0;"><em>Surveys are counted as distinct national-level country-year combinations with observed consumption outcomes within a comparable spell.</em></div>
 
 ### Economic Indicators
 
