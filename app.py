@@ -22,6 +22,7 @@ import plotly.express as px
 VERSION       = "v1"
 SCRIPT_DIR    = Path(__file__).resolve().parent
 METHODS_FILE  = SCRIPT_DIR / "methods.md"
+GUIDE_FILE    = SCRIPT_DIR / "guide.md"
 
 BUCKET     = "conphi"
 GCS_PREFIX = f"gs://{BUCKET}/conphi_v1_report"
@@ -355,7 +356,8 @@ if "selected_year" not in st.session_state:
     st.session_state.selected_year = "All Years"
 
 # ============================================================
-# SIDEBAR  — reordered and with cascading filters
+# SIDEBAR  — Year → Region → Sub-Region → Country (cascade)
+#            with reset-on-conflict for country
 # ============================================================
 with st.sidebar:
     st.markdown("## φ Controls")
@@ -374,7 +376,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # ── Cascading filters: Year → Country → Sub-Region → Region → WFP ──
+    # ── Cascading filters: Year → Region → Sub-Region → Country → WFP ──
     # Build a base frame scoped to the current model/pred/data selections
     _cascade_base = fact[
         (fact[COL["model_type"]]      == selected_model) &
@@ -383,63 +385,63 @@ with st.sidebar:
     if selected_data_type == "Validated":
         _cascade_base = _cascade_base[_cascade_base[COL["data_type"]] == "Validated"]
 
-    # Year (no upstream cascade yet — uses full model/pred/data frame)
+    # ── 1. Year ───────────────────────────────────────────────
     avail_years = sorted(_cascade_base[COL["prediction_year"]].dropna().astype(int).unique())
     cur_y       = st.session_state.selected_year
     opts_y      = ["All Years"] + [str(y) for y in avail_years]
     if cur_y not in opts_y:
         cur_y = "All Years"
-    idx_y         = opts_y.index(cur_y) if cur_y in opts_y else 0
+    idx_y         = opts_y.index(cur_y)
     selected_year = st.selectbox("Year", opts_y, index=idx_y, key="sidebar_year")
     st.session_state.selected_year = selected_year
 
-    # Apply year filter for downstream cascades
     _cascade_yr = _cascade_base.copy()
     if selected_year != "All Years":
         _cascade_yr = _cascade_yr[_cascade_yr[COL["prediction_year"]] == int(selected_year)]
 
-    # Country (cascades from year)
-    avail_isos_cascade  = sorted(_cascade_yr[COL["country_code"]].unique())
-    country_names_avail = sorted([code_to_name.get(c, c) for c in avail_isos_cascade])
-    cur_c = st.session_state.selected_country
-    if cur_c not in ["All Countries"] + country_names_avail:
-        cur_c = "All Countries"
-    opts_c        = ["All Countries"] + country_names_avail
-    idx_c         = opts_c.index(cur_c) if cur_c in opts_c else 0
-    selected_name = st.selectbox("Country", opts_c, index=idx_c, key="sidebar_country")
-    st.session_state.selected_country = selected_name
-
-    # Apply country filter for downstream cascades
-    _cascade_cntry = _cascade_yr.copy()
-    if selected_name != "All Countries":
-        _cascade_cntry = _cascade_cntry[
-            _cascade_cntry[COL["country_code"]] == name_to_code.get(selected_name, selected_name)
-        ]
-
-    # Sub-Region (cascades from year + country)
-    if COL["sub_region"] in _cascade_cntry.columns:
-        avail_subregions = sorted(_cascade_cntry[COL["sub_region"]].dropna().unique())
-    else:
-        avail_subregions = all_subregions
-    selected_subregion = st.selectbox(
-        "Sub-Region", ["All"] + avail_subregions, index=0, key="sidebar_subregion"
-    )
-
-    # Apply sub-region filter
-    _cascade_sub = _cascade_cntry.copy()
-    if selected_subregion != "All" and COL["sub_region"] in _cascade_sub.columns:
-        _cascade_sub = _cascade_sub[_cascade_sub[COL["sub_region"]] == selected_subregion]
-
-    # Region (cascades from year + country + sub-region)
-    if COL["region"] in _cascade_sub.columns:
-        avail_regions_cascade = sorted(_cascade_sub[COL["region"]].dropna().unique())
+    # ── 2. Region (cascades from year) ────────────────────────
+    if COL["region"] in _cascade_yr.columns:
+        avail_regions_cascade = sorted(_cascade_yr[COL["region"]].dropna().unique())
     else:
         avail_regions_cascade = all_regions
     selected_region = st.selectbox(
         "Region", ["All"] + avail_regions_cascade, index=0, key="sidebar_region"
     )
 
-    # WFP scope — named "WFP | All Countries", options: All / WFP Countries
+    _cascade_region = _cascade_yr.copy()
+    if selected_region != "All" and COL["region"] in _cascade_region.columns:
+        _cascade_region = _cascade_region[_cascade_region[COL["region"]] == selected_region]
+
+    # ── 3. Sub-Region (cascades from year + region) ───────────
+    if COL["sub_region"] in _cascade_region.columns:
+        avail_subregions = sorted(_cascade_region[COL["sub_region"]].dropna().unique())
+    else:
+        avail_subregions = all_subregions
+    selected_subregion = st.selectbox(
+        "Sub-Region", ["All"] + avail_subregions, index=0, key="sidebar_subregion"
+    )
+
+    _cascade_sub = _cascade_region.copy()
+    if selected_subregion != "All" and COL["sub_region"] in _cascade_sub.columns:
+        _cascade_sub = _cascade_sub[_cascade_sub[COL["sub_region"]] == selected_subregion]
+
+    # ── 4. Country (cascades from year + region + sub-region) ─
+    # Reset-on-conflict: if the stored country is no longer in the
+    # available list given the current region/sub-region, clear it.
+    avail_isos_cascade  = sorted(_cascade_sub[COL["country_code"]].unique())
+    country_names_avail = sorted([code_to_name.get(c, c) for c in avail_isos_cascade])
+
+    cur_c = st.session_state.selected_country
+    if cur_c not in ["All Countries"] + country_names_avail:
+        cur_c = "All Countries"
+        st.session_state.selected_country = "All Countries"
+
+    opts_c        = ["All Countries"] + country_names_avail
+    idx_c         = opts_c.index(cur_c)
+    selected_name = st.selectbox("Country", opts_c, index=idx_c, key="sidebar_country")
+    st.session_state.selected_country = selected_name
+
+    # ── 5. WFP scope ──────────────────────────────────────────
     selected_wfp = st.selectbox(
         "WFP | All Countries",
         ["All", "WFP Countries"],
@@ -469,12 +471,12 @@ def apply_sidebar(df, force_validated=False):
     ]
     if selected_wfp == "WFP Countries":
         out = out[out[COL["wfp_country"]] == "Yes"]
-    if selected_name != "All Countries":
-        out = out[out[COL["country_code"]] == name_to_code.get(selected_name, selected_name)]
     if selected_region != "All" and COL["region"] in out.columns:
         out = out[out[COL["region"]] == selected_region]
     if selected_subregion != "All" and COL["sub_region"] in out.columns:
         out = out[out[COL["sub_region"]] == selected_subregion]
+    if selected_name != "All Countries":
+        out = out[out[COL["country_code"]] == name_to_code.get(selected_name, selected_name)]
     return out
 
 
@@ -491,9 +493,6 @@ def filter_diag_residuals(df):
             (out["percentile"] >= pct_range[0]) &
             (out["percentile"] <= pct_range[1])
         ]
-    if selected_name != "All Countries" and "iso" in out.columns:
-        iso = name_to_code.get(selected_name, selected_name)
-        out = out[out["iso"] == iso]
     if selected_region != "All" and "region" in out.columns:
         out = out[out["region"] == selected_region]
     if selected_subregion != "All":
@@ -501,6 +500,9 @@ def filter_diag_residuals(df):
             if col in out.columns:
                 out = out[out[col] == selected_subregion]
                 break
+    if selected_name != "All Countries" and "iso" in out.columns:
+        iso = name_to_code.get(selected_name, selected_name)
+        out = out[out["iso"] == iso]
     return out
 
 
@@ -612,24 +614,19 @@ st.markdown(
 )
 
 # ── Tab persistence ─────────────────────────────────────────────
-# Streamlit reruns always render from tab 0. We work around this by
-# (a) storing the active tab index in session_state, and
-# (b) injecting JS that clicks back to that tab after every rerun,
-#     while also listening for user tab-clicks to keep state in sync.
 if "active_tab" not in st.session_state:
     st.session_state.active_tab = 0
 
 TAB_LABELS = [
     "📖 Overview & Methods",
+    "🧭 User Guide",
     "🌍 Results Explorer",
     "📊 Model Performance",
     "📐 Predictor Analysis",
 ]
 
-(tab_methods, tab_explorer, tab_performance, tab_predictors) = st.tabs(TAB_LABELS)
+(tab_methods, tab_guide, tab_explorer, tab_performance, tab_predictors) = st.tabs(TAB_LABELS)
 
-# Hidden text input acts as a bridge: JS writes the clicked tab index
-# into it, Streamlit reads it on the next rerun and updates session_state.
 _sentinel_val = st.text_input(
     "active_tab_bridge",
     value=str(st.session_state.active_tab),
@@ -649,14 +646,14 @@ st.components.v1.html(
     (function() {{
         const WANT = {st.session_state.active_tab};
 
-        // Find our sentinel input by iterating all text inputs in the parent frame
         function getSentinel() {{
             return Array.from(
                 window.parent.document.querySelectorAll('input[type="text"]')
             ).find(el => el.closest('[data-testid="stTextInput"]') !== null
                       && el.value !== null
                       && (el.value === '0' || el.value === '1'
-                          || el.value === '2' || el.value === '3'));
+                          || el.value === '2' || el.value === '3'
+                          || el.value === '4'));
         }}
 
         function setTab(idx) {{
@@ -667,13 +664,11 @@ st.components.v1.html(
             ).set;
             setter.call(sentinel, String(idx));
             sentinel.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            // Trigger Streamlit's onChange handler
             sentinel.dispatchEvent(new Event('change', {{ bubbles: true }}));
         }}
 
         function attachListeners(buttons) {{
             buttons.forEach(function(btn, idx) {{
-                // Use capture so we get the click before Streamlit's handler
                 btn.addEventListener('click', function() {{ setTab(idx); }}, true);
             }});
         }}
@@ -687,7 +682,6 @@ st.components.v1.html(
             const buttons = tabList.querySelectorAll('button[role="tab"]');
             if (buttons.length === 0) {{ setTimeout(restoreAndAttach, 60); return; }}
 
-            // Click back to the remembered tab if it isn't already active
             if (buttons[WANT] &&
                 buttons[WANT].getAttribute('aria-selected') !== 'true') {{
                 buttons[WANT].click();
@@ -716,7 +710,19 @@ with tab_methods:
         )
 
 # ============================================================
-# TAB 2 — RESULTS EXPLORER
+# TAB 2 — USER GUIDE
+# ============================================================
+with tab_guide:
+    if GUIDE_FILE.exists():
+        st.markdown(GUIDE_FILE.read_text(encoding="utf-8"))
+    else:
+        st.warning(
+            f"Guide file not found at `{GUIDE_FILE}`. "
+            "Create `guide.md` in the same folder as `app.py`."
+        )
+
+# ============================================================
+# TAB 3 — RESULTS EXPLORER
 # ============================================================
 with tab_explorer:
     available_isos = sorted(base_df[COL["country_code"]].unique())
@@ -902,13 +908,10 @@ with tab_explorer:
             )
 
 # ============================================================
-# TAB 3 — MODEL PERFORMANCE
-# Sidebar controls model + pred type; no extra dropdowns at top.
-# Each chart section gets its own per-chart metric picker.
+# TAB 4 — MODEL PERFORMANCE
 # ============================================================
 with tab_performance:
 
-    # eval_model and eval_pred_type driven by sidebar
     eval_model = selected_model
     eval_colour = USE_COLOUR if eval_model == "USE" else WASE_COLOUR
 
@@ -923,7 +926,6 @@ with tab_performance:
         "Horizon (WASE only)": "horizon",
     }
 
-    # ── Controls row: breakdown only ─────────────────────────
     ctrl_c1, ctrl_c2, _ = st.columns([1, 1, 3])
     with ctrl_c1:
         eval_groupby = st.selectbox(
@@ -934,12 +936,10 @@ with tab_performance:
             key="eval_groupby",
         )
 
-    # ── Load diagnostic residuals ─────────────────────────────
     res_df  = load_diag_residuals(eval_model)
     res_df  = filter_diag_residuals(res_df)
     diag_df = apply_sidebar(fact, force_validated=True)
 
-    # ── Metric key helper ─────────────────────────────────────
     METRIC_OPTIONS = ["MAE (Log)", "RMSE (Log)", "Bias (Log)", "R² (Log)",
                       "MAPE %", "MAE (Consumption)", "RMSE (Consumption)"]
     METRIC_MAP = {
@@ -952,7 +952,6 @@ with tab_performance:
         "RMSE (Consumption)": "rmse_cons",
     }
 
-    # ── Performance summary prose ─────────────────────────────
     st.markdown(
         f'<div class="section-header">{eval_model} — Performance Summary</div>',
         unsafe_allow_html=True,
@@ -1040,7 +1039,6 @@ with tab_performance:
         )
         st.markdown("")
 
-        # ── A. Metrics table ──────────────────────────────────
         if eval_groupby == "Overall":
             overall_df = _compute_grouped(res_df.assign(_all="All"), "_all")
             if len(overall_df) > 0:
@@ -1056,7 +1054,6 @@ with tab_performance:
             if gcol not in res_df.columns:
                 st.info(f"Column `{gcol}` not available for {eval_model}.")
             else:
-                # Per-table metric picker
                 tbl_metric = st.selectbox(
                     "Sort table by", METRIC_OPTIONS, index=0, key="perf_tbl_metric"
                 )
@@ -1077,7 +1074,6 @@ with tab_performance:
             f"Run `conphi_v1_{eval_model.lower()}_diagnostics.py` first."
         )
 
-    # ── B. Observed vs Predicted scatter ──────────────────────
     st.markdown(
         f'<div class="section-header">{eval_model} — Observed vs Predicted</div>',
         unsafe_allow_html=True,
@@ -1121,7 +1117,6 @@ with tab_performance:
         fig_s.update_yaxes(scaleanchor="x", scaleratio=1)
         st.plotly_chart(fig_s, use_container_width=True)
 
-    # ── C. Metric by grouping chart ───────────────────────────
     if res_df is not None and len(res_df) > 0 and eval_groupby != "Overall":
         st.markdown(
             f'<div class="section-header">{eval_model} — Metric by {eval_groupby}</div>',
@@ -1129,7 +1124,6 @@ with tab_performance:
         )
         gcol = GROUPBY_COL_MAP.get(eval_groupby, "region")
         if gcol in res_df.columns:
-            # Per-chart metric picker
             chart_metric = st.selectbox(
                 "Metric", METRIC_OPTIONS, index=0, key="perf_chart_metric"
             )
@@ -1186,7 +1180,6 @@ with tab_performance:
                     fig_bar.update_layout(yaxis=dict(autorange="reversed"))
                 st.plotly_chart(fig_bar, use_container_width=True)
 
-    # ── D. Error by percentile ────────────────────────────────
     st.markdown(
         f'<div class="section-header">{eval_model} — Error by Percentile</div>',
         unsafe_allow_html=True,
@@ -1205,7 +1198,6 @@ with tab_performance:
         pm = pd.DataFrame(pr)
         if len(pm) > 0:
             mo  = {"RMSE": MC["rmse_cons"], "MAE": MC["mae_cons"]}
-            # Per-chart metric picker
             sl = st.selectbox("Metric", list(mo.keys()), index=0, key="dp_m")
             fig_p = px.line(
                 pm, x=COL["percentile"], y=mo[sl],
@@ -1222,7 +1214,6 @@ with tab_performance:
             )
             st.plotly_chart(fig_p, use_container_width=True)
 
-    # ── E. RMSE / MAE / MAPE by year ──────────────────────────
     st.markdown(
         f'<div class="section-header">{eval_model} — Performance by Year</div>',
         unsafe_allow_html=True,
@@ -1284,7 +1275,6 @@ with tab_performance:
             )
             st.plotly_chart(fig_y, use_container_width=True)
 
-    # ── F. Residual violins by region ─────────────────────────
     st.markdown(
         f'<div class="section-header">{eval_model} — Residual Distribution by Region</div>',
         unsafe_allow_html=True,
@@ -1315,7 +1305,6 @@ with tab_performance:
             )
             st.plotly_chart(fig_vio, use_container_width=True)
 
-    # ── G. Coverage calibration ───────────────────────────────
     st.markdown(
         f'<div class="section-header">{eval_model} — Coverage Calibration</div>',
         unsafe_allow_html=True,
@@ -1360,7 +1349,6 @@ with tab_performance:
     else:
         st.info(f"Coverage data not found. Run `conphi_v1_{eval_model.lower()}_diagnostics.py` first.")
 
-    # ── H. Country-level error ────────────────────────────────
     st.markdown(
         f'<div class="section-header">{eval_model} — Country-Level Error</div>',
         unsafe_allow_html=True,
@@ -1374,7 +1362,6 @@ with tab_performance:
         if selected_wfp == "WFP Countries" and "iso" in cntry_df.columns:
             cntry_df = cntry_df[cntry_df["iso"].isin(wfp_isos)]
 
-        # Per-chart metric picker for country MAE
         cntry_metric = st.selectbox(
             "Metric", ["MAE (Log)", "Bias (Log)", "RMSE (Log)", "MAE (Consumption)", "RMSE (Consumption)"],
             index=0, key="cntry_metric"
@@ -1417,7 +1404,6 @@ with tab_performance:
     else:
         st.info(f"Country MAE data not found. Run `conphi_v1_{eval_model.lower()}_diagnostics.py` first.")
 
-    # ── I. USE — dt breakdown ─────────────────────────────────
     if eval_model == "USE" and res_df is not None and len(res_df) > 0 and "dt" in res_df.columns:
         st.markdown(
             '<div class="section-header">USE — Performance by dt (Years Since Survey)</div>',
@@ -1448,7 +1434,6 @@ with tab_performance:
             )
             st.plotly_chart(fig_dt, use_container_width=True)
 
-    # ── J. WASE — horizon breakdown ───────────────────────────
     if eval_model == "WASE" and res_df is not None and len(res_df) > 0 and "horizon" in res_df.columns:
         st.markdown(
             '<div class="section-header">WASE — Performance by Forecast Horizon</div>',
@@ -1479,7 +1464,6 @@ with tab_performance:
             )
             st.plotly_chart(fig_hor, use_container_width=True)
 
-    # ── K. Raw residuals expander ─────────────────────────────
     with st.expander(f"View {eval_model} residuals data"):
         if res_df is not None and len(res_df) > 0:
             yr_col    = "target_year" if eval_model == "USE" else "focal_year"
@@ -1497,8 +1481,7 @@ with tab_performance:
             st.info("No residuals data loaded.")
 
 # ============================================================
-# TAB 4 — PREDICTOR ANALYSIS
-# Sidebar drives model + pred type — no extra dropdowns at top.
+# TAB 5 — PREDICTOR ANALYSIS
 # ============================================================
 with tab_predictors:
 
@@ -1516,7 +1499,6 @@ with tab_predictors:
             f"Run `conphi_v1_{pred_model.lower()}_diagnostics.py` first."
         )
     else:
-        # Graceful pred_type fallback
         if "pred_type" in params_df.columns:
             available_pred_types = params_df["pred_type"].unique().tolist()
             if pred_pred_type in available_pred_types:
@@ -1534,7 +1516,6 @@ with tab_predictors:
         else:
             yr_col = "target_year" if pred_model == "USE" else "focal_year"
 
-            # ── Predictor summary prose ────────────────────────
             st.markdown(
                 f'<div class="section-header">{pred_model} — Predictor Summary</div>',
                 unsafe_allow_html=True,
@@ -1559,7 +1540,6 @@ with tab_predictors:
                     prose = "Parameter trajectories are shown below."
 
             else:
-                # ── Expanded WASE prose (fix 8) ───────────────
                 if "sd" in params_df.columns and len(params_df) > 0:
                     snr = (
                         params_df.groupby("param")
@@ -1639,11 +1619,9 @@ with tab_predictors:
                 st.write("**Rows:**", len(params_df))
                 st.dataframe(params_df.head(20), use_container_width=True)
 
-            # ── USE panels ────────────────────────────────────
             if pred_model == "USE":
                 avail_params = params_df["param"].unique()
 
-                # ── Asymmetric passthrough over time ──────────
                 st.markdown(
                     '<div class="section-header">USE — Asymmetric GDP Passthrough Over Time</div>',
                     unsafe_allow_html=True,
@@ -1688,10 +1666,6 @@ with tab_predictors:
                     )
                     st.plotly_chart(fig_par, use_container_width=True)
 
-                # ── Passthrough across percentile spline ──────
-                # Uses beta_p_pos / beta_p_neg to show how tilt varies across percentiles.
-                # We reconstruct the effective passthrough at each percentile p as:
-                #   β_eff(p) = β₀ ± β_p · bell(p)  where bell(p) = 4·p·(1-p)
                 st.markdown(
                     '<div class="section-header">USE — Effective Passthrough Across Percentiles</div>',
                     unsafe_allow_html=True,
@@ -1772,7 +1746,6 @@ with tab_predictors:
                 else:
                     st.info("Spline tilt parameters (beta_p_pos / beta_p_neg) not found in parameter data.")
 
-                # ── Noise and tail parameters ─────────────────
                 st.markdown(
                     '<div class="section-header">USE — Noise and Tail Parameters Over Time</div>',
                     unsafe_allow_html=True,
@@ -1807,7 +1780,6 @@ with tab_predictors:
                     )
                     st.plotly_chart(fig_par2, use_container_width=True)
 
-                # ── All parameter trajectories grid ───────────
                 st.markdown(
                     '<div class="section-header">USE — All Parameter Trajectories</div>',
                     unsafe_allow_html=True,
@@ -1846,10 +1818,8 @@ with tab_predictors:
                     )
                     st.plotly_chart(fig_grid, use_container_width=True)
 
-            # ── WASE panels ───────────────────────────────────
             if pred_model == "WASE":
 
-                # ── Forest plot ───────────────────────────────
                 st.markdown(
                     '<div class="section-header">WASE — Coefficient Forest Plot</div>',
                     unsafe_allow_html=True,
@@ -1886,7 +1856,6 @@ with tab_predictors:
                     )
                     st.plotly_chart(fig_forest, use_container_width=True)
 
-                # ── Coefficient stability across folds ────────
                 if yr_col in params_df.columns:
                     st.markdown(
                         '<div class="section-header">WASE — Coefficient Stability Across Folds</div>',
@@ -1929,7 +1898,6 @@ with tab_predictors:
                         )
                         st.plotly_chart(fig_traj, use_container_width=True)
 
-                # ── RBF spline weights visualisation ─────────
                 rbf_params = [p for p in ["rbf_weight_1", "rbf_weight_2", "rbf_weight_3"]
                               if p in params_df["param"].unique()]
                 if rbf_params:
@@ -1946,10 +1914,8 @@ with tab_predictors:
                         '</div>',
                         unsafe_allow_html=True,
                     )
-                    # Infer knot positions: 5 knots evenly on [0.1, 0.9]
                     n_knots    = 5
                     knot_pcts  = np.linspace(0.1, 0.9, n_knots) * 100
-                    # Weights we have (up to 3 labelled explicitly; remainder may be unnamed)
                     all_rbf    = [p for p in params_df["param"].unique() if p.startswith("rbf_weight")]
                     all_rbf    = sorted(all_rbf, key=lambda x: int(x.split("_")[-1]) if x.split("_")[-1].isdigit() else 99)
                     rbf_knot_x = knot_pcts[:len(all_rbf)]
@@ -1990,7 +1956,6 @@ with tab_predictors:
                     )
                     st.plotly_chart(fig_rbf, use_container_width=True)
 
-                # ── Signal-to-noise chart ─────────────────────
                 st.markdown(
                     '<div class="section-header">WASE — Predictor Signal-to-Noise Ratio</div>',
                     unsafe_allow_html=True,
