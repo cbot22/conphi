@@ -23,6 +23,71 @@ VERSION       = "v1"
 SCRIPT_DIR    = Path(__file__).resolve().parent
 METHODS_FILE  = SCRIPT_DIR / "methods.md"
 
+BUCKET     = "conphi"
+GCS_PREFIX = f"gs://{BUCKET}/conphi_v1_report"
+
+# ============================================================
+# GCS AUTHENTICATION
+# ============================================================
+import gcsfs
+from google.oauth2 import service_account
+
+@st.cache_resource
+def _gcs_fs():
+    creds = service_account.Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+    return gcsfs.GCSFileSystem(token=creds)
+
+# ============================================================
+# DATA LOADERS
+# ============================================================
+@st.cache_data
+def load_fact():
+    fs = _gcs_fs()
+    with fs.open(f"{GCS_PREFIX}/fact_predictions.parquet") as f:
+        return pd.read_parquet(f)
+
+@st.cache_data
+def load_country_dim():
+    fs = _gcs_fs()
+    with fs.open(f"{GCS_PREFIX}/dim_country.parquet") as f:
+        return pd.read_parquet(f)
+
+@st.cache_data
+def load_diag_parquet(model: str, name: str):
+    folder = "diagnostics_use" if model == "USE" else "diagnostics_wase"
+    fs     = _gcs_fs()
+    path   = f"{GCS_PREFIX}/{folder}/{name}"
+    try:
+        with fs.open(path) as f:
+            return pd.read_parquet(f)
+    except Exception:
+        return None
+
+@st.cache_data
+def load_diag_residuals(model: str):
+    prefix = "use" if model == "USE" else "wase"
+    return load_diag_parquet(model, f"{prefix}_diag_residuals.parquet")
+
+@st.cache_data
+def load_diag_params(model: str):
+    if model == "USE":
+        return load_diag_parquet(model, "use_diag_params_over_time.parquet")
+    else:
+        return load_diag_parquet(model, "wase_diag_params_forest.parquet")
+
+@st.cache_data
+def load_diag_coverage(model: str):
+    prefix = "use" if model == "USE" else "wase"
+    return load_diag_parquet(model, f"{prefix}_diag_coverage.parquet")
+
+@st.cache_data
+def load_diag_country_mae(model: str):
+    prefix = "use" if model == "USE" else "wase"
+    return load_diag_parquet(model, f"{prefix}_diag_country_mae.parquet")
+
 # ============================================================
 # COLUMN NAME MAP
 # ============================================================
