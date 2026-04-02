@@ -762,7 +762,145 @@ with tab_explorer:
         st.caption("Use the **Country** dropdown in the sidebar to select a country.")
 
     df = base_df_yr
+    if len(df) == 0:
+        st.warning("No data for the selected filters.")
+    else:
+        val_df    = df.dropna(subset=[COL["observed_consumption"], COL["predicted_consumption"]])
+        n_surveys = count_surveys(df)
+        r2_d, mape_d = None, None
+        if len(val_df) > 0:
+            ov   = val_df[COL["observed_consumption"]].values
+            pv   = val_df[COL["predicted_consumption"]].values
+            r2_d = r2_from_cols(ov, pv)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ap = np.abs((pv - ov) / ov)
+                ap = ap[np.isfinite(ap)]
+                if len(ap) > 0:
+                    mape_d = np.mean(ap) * 100
 
+        st.markdown('<div class="section-header">Consumption Distribution</div>', unsafe_allow_html=True)
+        bh = ""
+        if r2_d   is not None: bh += f'<span class="metric-badge"><span class="label">R² </span><span class="value">{r2_d:.4f}</span></span>'
+        if mape_d is not None: bh += f'<span class="metric-badge"><span class="label">MAPE </span><span class="value">{mape_d:.1f}%</span></span>'
+        bh += f'<span class="metric-badge"><span class="label">Surveys </span><span class="value">{n_surveys:,}</span></span>'
+        bh += f'<span class="metric-badge"><span class="label">Percentiles </span><span class="value">{pct_range[0]}–{pct_range[1]}</span></span>'
+        st.markdown(bh, unsafe_allow_html=True)
+        st.markdown("")
+
+        is_single    = (selected_name != "All Countries") and (selected_year != "All Years")
+        is_validated = selected_data_type == "Validated"
+        fig    = go.Figure()
+        mc_col = MODEL_COLOURS.get(selected_model, TERRACOTTA)
+        cc_col = CI_COLOURS.get(selected_model, CI_COLOUR)
+
+        if is_single:
+            p_df = df.sort_values(COL["percentile"])
+            pct  = p_df[COL["percentile"]].values
+            pred = p_df[COL["predicted_consumption"]].values
+            obs  = p_df[COL["observed_consumption"]].values   if COL["observed_consumption"]   in p_df.columns else np.full(len(p_df), np.nan)
+            lo   = p_df[COL["lower_predictive_band"]].values  if COL["lower_predictive_band"]  in p_df.columns else np.full(len(p_df), np.nan)
+            hi   = p_df[COL["upper_predictive_band"]].values  if COL["upper_predictive_band"]  in p_df.columns else np.full(len(p_df), np.nan)
+            err  = p_df[COL["percentage_error"]].values       if COL["percentage_error"]       in p_df.columns else np.full(len(p_df), np.nan)
+
+            if show_ci:
+                ok = ~(np.isnan(lo) | np.isnan(hi))
+                if ok.any():
+                    fig.add_trace(go.Scatter(
+                        x=np.concatenate([pct[ok], pct[ok][::-1]]),
+                        y=np.concatenate([hi[ok],  lo[ok][::-1]]),
+                        fill="toself", fillcolor=cc_col,
+                        line=dict(width=0), name="90% CI", hoverinfo="skip",
+                    ))
+            fig.add_trace(go.Scatter(
+                x=pct, y=pred, mode="lines+markers",
+                marker=dict(size=4, color=mc_col),
+                line=dict(color=mc_col, width=2.5),
+                name=f"Predicted ({selected_model})",
+                customdata=np.stack([pct, pred, obs, lo, hi, err], axis=-1),
+                hovertemplate=(
+                    "<b>Percentile %{customdata[0]:.0f}</b><br>"
+                    "Predicted: %{customdata[1]:.3f} $/day<br>"
+                    "Observed: %{customdata[2]:.3f} $/day<br>"
+                    "Lower CI: %{customdata[3]:.3f}<br>"
+                    "Upper CI: %{customdata[4]:.3f}<br>"
+                    "Error: %{customdata[5]:.1f}%<extra></extra>"
+                ),
+            ))
+            if is_validated:
+                om = ~np.isnan(obs)
+                if om.any():
+                    fig.add_trace(go.Scatter(
+                        x=pct[om], y=obs[om], mode="lines+markers",
+                        marker=dict(size=4, color=OBS_COLOUR, symbol="diamond"),
+                        line=dict(color=OBS_COLOUR, width=2, dash="dot"),
+                        name="Observed",
+                    ))
+        else:
+            has_lo = COL["lower_predictive_band"] in df.columns
+            has_hi = COL["upper_predictive_band"] in df.columns
+            agg_d  = {"pred_med": (COL["predicted_consumption"], "median")}
+            if has_lo: agg_d["ci_lo"] = (COL["lower_predictive_band"], "median")
+            if has_hi: agg_d["ci_hi"] = (COL["upper_predictive_band"], "median")
+            agg = df.groupby(COL["percentile"]).agg(**agg_d).reset_index()
+            if show_ci and has_lo and has_hi:
+                ca = agg.dropna(subset=["ci_lo", "ci_hi"])
+                if len(ca) > 0:
+                    fig.add_trace(go.Scatter(
+                        x=np.concatenate([ca[COL["percentile"]].values, ca[COL["percentile"]].values[::-1]]),
+                        y=np.concatenate([ca["ci_hi"].values, ca["ci_lo"].values[::-1]]),
+                        fill="toself", fillcolor=cc_col, line=dict(width=0),
+                        name="90% CI (Median)", hoverinfo="skip",
+                    ))
+            fig.add_trace(go.Scatter(
+                x=agg[COL["percentile"]], y=agg["pred_med"],
+                mode="lines+markers",
+                marker=dict(size=4, color=mc_col),
+                line=dict(color=mc_col, width=2.5),
+                name=f"Predicted Median ({selected_model})",
+            ))
+            if is_validated:
+                obs_r = df.dropna(subset=[COL["observed_consumption"]])
+                if len(obs_r) > 0:
+                    ao = obs_r.groupby(COL["percentile"]).agg(
+                        med=(COL["observed_consumption"], "median")
+                    ).reset_index()
+                    fig.add_trace(go.Scatter(
+                        x=ao[COL["percentile"]], y=ao["med"],
+                        mode="lines+markers",
+                        marker=dict(size=4, color=OBS_COLOUR, symbol="diamond"),
+                        line=dict(color=OBS_COLOUR, width=2, dash="dot"),
+                        name="Observed Median",
+                    ))
+
+        tp = [selected_name if selected_name != "All Countries" else "All Countries"]
+        if selected_year != "All Years": tp.append(str(selected_year))
+        tp.append(f"{selected_model} · {selected_pred}")
+        fig.update_layout(
+            template="plotly_white", height=560,
+            xaxis_title="Percentile",
+            yaxis_title="Consumption per Capita (2017 PPP $/day)",
+            legend=dict(orientation="h", y=-0.12, x=0),
+            margin=dict(l=60, r=20, t=50, b=70),
+            title=dict(text=" — ".join(tp), font=dict(size=14, color=ESPRESSO)),
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        with st.expander("View underlying data"):
+            dc = [c for c in [
+                COL["country_code"], COL["country_name"], COL["prediction_year"],
+                COL["percentile"], COL["predicted_consumption"],
+                COL["observed_consumption"],
+                COL["lower_predictive_band"], COL["upper_predictive_band"],
+                COL["percentage_error"], COL["model_type"],
+                COL["prediction_type"], COL["data_type"],
+            ] if c in df.columns]
+            st.dataframe(
+                df[dc].sort_values([COL["country_code"], COL["prediction_year"], COL["percentile"]]),
+                use_container_width=True, hide_index=True, height=400,
+            )
+
+            
 # ============================================================
 # TAB 4 — MODEL PERFORMANCE
 # ============================================================
