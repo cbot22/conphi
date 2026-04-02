@@ -346,9 +346,9 @@ st.markdown(f"""
     }}
     [data-testid="stSidebar"] .stRadio [role="radiogroup"] label[data-checked="true"],
     [data-testid="stSidebar"] .stRadio [role="radiogroup"] label:has(input:checked) {{
-        background: {SLATE_BLUE};
+        background: {LIGHT_SLATE};
         color: white;
-        border-color: {SLATE_BLUE};
+        border-color: {LIGHT_SLATE};
         font-weight: 600;
     }}
     /* Hide the default radio circle */
