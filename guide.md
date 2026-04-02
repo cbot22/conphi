@@ -6,9 +6,6 @@ Con φ (Conphi) is a Bayesian consumption distribution nowcasting and forecastin
 
 ## Tabs
 
-### Overview & Methods
-A plain-language description of the Con φ methodology, covering how the two sub-models work, what data they use, and how outputs should be interpreted. Start here if you are new to the system.
-
 ### Results Explorer
 Shows predicted consumption distributions (and observed survey distributions where available) as a curve across percentiles for the selected country, year, and model. Use this tab to inspect individual country trajectories or browse aggregate patterns across the full portfolio.
 
@@ -63,6 +60,20 @@ The four geographic filters — **Year**, **Region**, **Sub-Region**, and **Coun
 
 **WFP \| All Countries**
 Restricts the portfolio to countries where WFP has an active operational presence. Useful for focusing performance assessment and results on the core operational scope.
+
+
+### 8.2 Metrics reported
+
+For each vintage year and horizon:
+
+- **MAE (Consumption)**: mean absolute error in $/day
+- **RMSE (Consumption)**: root mean squared error in $/day
+- **MAPE %**: mean absolute percentage error
+- **MAE (Log)**: mean absolute error in log space
+- **RMSE (Log)**: root mean squared error in log space
+- **Bias (Log)**: mean signed error in log space (positive = over-prediction)
+- **R² (Log)**: coefficient of determination in log space
+- **Coverage 90%**: fraction of observations falling within the 90% predictive interval
 
 ---
 
