@@ -316,10 +316,6 @@ st.markdown(f"""
 
     [data-testid="stSidebar"] {{ background: {CREAM}; }}
 
-    /* Compact radio buttons for sidebar controls */
-    [data-testid="stSidebar"] [data-testid="stRadio"] label {{ font-size: 0.82rem !important; }}
-    [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] {{ gap: 0.4rem; }}
-
     #MainMenu {{visibility: hidden;}} footer {{visibility: hidden;}} header {{visibility: hidden;}}
 </style>
 """, unsafe_allow_html=True)
@@ -367,10 +363,10 @@ if "selected_year" not in st.session_state:
 with st.sidebar:
     st.markdown("## φ Controls")
 
-    # ── Model / prediction / data type (horizontal radio buttons) ──
-    selected_model     = st.radio("Model Type",      all_model_types,              index=0, horizontal=True)
-    selected_pred      = st.radio("Prediction Type",  all_pred_types,              index=0, horizontal=True)
-    selected_data_type = st.radio("Data Type",       ["Validated", "Predicted"],   index=0, horizontal=True)
+    # ── Model / prediction / data type ────────────────────────
+    selected_model     = st.selectbox("Model Type",      all_model_types, index=0)
+    selected_pred      = st.selectbox("Prediction Type", all_pred_types,  index=0)
+    selected_data_type = st.selectbox("Data Type", ["Validated", "Predicted"], index=0)
 
     st.markdown("---")
 
@@ -1200,21 +1196,33 @@ with tab_performance:
     if len(_perf_df) > 0:
         pr = []
         for (pt, p), g in _perf_df.groupby([COL["prediction_type"], COL["percentile"]]):
-            r = g[COL["predicted_consumption"]].values - g[COL["observed_consumption"]].values
+            obs_vals  = g[COL["observed_consumption"]].values
+            pred_vals = g[COL["predicted_consumption"]].values
+            r = pred_vals - obs_vals
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ape = np.where(obs_vals > 0, np.abs(r / obs_vals), np.nan)
+            ol = g[COL["observed_log_consumption"]].values if COL["observed_log_consumption"] in g.columns else np.array([])
+            pl = g[COL["predicted_log_consumption"]].values if COL["predicted_log_consumption"] in g.columns else np.array([])
+            rl = pl - ol if len(ol) > 0 and len(pl) > 0 else np.array([])
             pr.append({
                 COL["prediction_type"]: pt,
                 COL["percentile"]:      p,
-                MC["rmse_cons"]:        np.sqrt(np.mean(r ** 2)),
-                MC["mae_cons"]:         np.mean(np.abs(r)),
+                "mae_log":              float(np.mean(np.abs(rl))) if len(rl) > 0 else np.nan,
+                "rmse_log":             float(np.sqrt(np.mean(rl ** 2))) if len(rl) > 0 else np.nan,
+                "bias_log":             float(rl.mean()) if len(rl) > 0 else np.nan,
+                "r2_log":               float(1 - np.sum(rl**2) / np.sum((ol - ol.mean())**2)) if len(rl) > 1 and np.sum((ol - ol.mean())**2) > 1e-8 else np.nan,
+                "mape_pct":             float(np.nanmean(ape) * 100),
+                "mae_cons":             float(np.mean(np.abs(r))),
+                "rmse_cons":            float(np.sqrt(np.mean(r ** 2))),
             })
         pm = pd.DataFrame(pr)
         if len(pm) > 0:
-            mo  = {"RMSE": MC["rmse_cons"], "MAE": MC["mae_cons"]}
-            sl = st.selectbox("Metric", list(mo.keys()), index=0, key="dp_m")
+            pct_metric = st.selectbox("Metric", METRIC_OPTIONS, index=0, key="dp_m")
+            pct_metric_col = METRIC_MAP[pct_metric]
             fig_p = px.line(
-                pm, x=COL["percentile"], y=mo[sl],
+                pm, x=COL["percentile"], y=pct_metric_col,
                 color=COL["prediction_type"],
-                labels={COL["percentile"]: "Percentile", mo[sl]: sl},
+                labels={COL["percentile"]: "Percentile", pct_metric_col: pct_metric},
                 markers=True,
                 color_discrete_sequence=[eval_colour, SLATE_BLUE],
             )
@@ -1234,7 +1242,7 @@ with tab_performance:
     _all_val = _all_val[_all_val[COL["model_type"]] == eval_model]
     if len(_all_val) > 0:
         yr_metric = st.selectbox(
-            "Metric", METRIC_OPTIONS[:5], index=1, key="yr_metric"
+            "Metric", METRIC_OPTIONS, index=1, key="yr_metric"
         )
         yr_metric_col = METRIC_MAP[yr_metric]
         yr = []
@@ -1251,6 +1259,7 @@ with tab_performance:
                 "mae_log":   float(np.mean(np.abs(rl))) if len(rl) > 0 else np.nan,
                 "rmse_log":  float(np.sqrt(np.mean(rl ** 2))) if len(rl) > 0 else np.nan,
                 "bias_log":  float(rl.mean()) if len(rl) > 0 else np.nan,
+                "r2_log":    float(1 - np.sum(rl**2) / np.sum((g[COL["observed_log_consumption"]].values - g[COL["observed_log_consumption"]].values.mean())**2)) if len(rl) > 1 and np.sum((g[COL["observed_log_consumption"]].values - g[COL["observed_log_consumption"]].values.mean())**2) > 1e-8 else np.nan,
                 "mae_cons":  float(np.mean(np.abs(r))),
                 "rmse_cons": float(np.sqrt(np.mean(r ** 2))),
                 "mape_pct":  float(np.nanmean(ape) * 100),
