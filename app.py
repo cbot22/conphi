@@ -23,6 +23,7 @@ VERSION       = "v1"
 SCRIPT_DIR    = Path(__file__).resolve().parent
 METHODS_FILE  = SCRIPT_DIR / "methods.md"
 GUIDE_FILE    = SCRIPT_DIR / "guide.md"
+TECH_FILE     = SCRIPT_DIR / "technical_methods.md"
 
 BUCKET     = "conphi"
 GCS_PREFIX = f"gs://{BUCKET}/conphi_v1_report"
@@ -315,6 +316,10 @@ st.markdown(f"""
 
     [data-testid="stSidebar"] {{ background: {CREAM}; }}
 
+    /* Compact radio buttons for sidebar controls */
+    [data-testid="stSidebar"] [data-testid="stRadio"] label {{ font-size: 0.82rem !important; }}
+    [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] {{ gap: 0.4rem; }}
+
     #MainMenu {{visibility: hidden;}} footer {{visibility: hidden;}} header {{visibility: hidden;}}
 </style>
 """, unsafe_allow_html=True)
@@ -362,10 +367,10 @@ if "selected_year" not in st.session_state:
 with st.sidebar:
     st.markdown("## φ Controls")
 
-    # ── Model / prediction / data type ────────────────────────
-    selected_model     = st.selectbox("Model Type",      all_model_types, index=0)
-    selected_pred      = st.selectbox("Prediction Type", all_pred_types,  index=0)
-    selected_data_type = st.selectbox("Data Type", ["Validated", "Predicted"], index=0)
+    # ── Model / prediction / data type (horizontal radio buttons) ──
+    selected_model     = st.radio("Model Type",      all_model_types,              index=0, horizontal=True)
+    selected_pred      = st.radio("Prediction Type",  all_pred_types,              index=0, horizontal=True)
+    selected_data_type = st.radio("Data Type",       ["Validated", "Predicted"],   index=0, horizontal=True)
 
     st.markdown("---")
 
@@ -620,12 +625,13 @@ if "active_tab" not in st.session_state:
 TAB_LABELS = [
     "📖 Overview & Methods",
     "🧭 User Guide",
+    "🔬 Technical Methods",
     "🌍 Results Explorer",
     "📊 Model Performance",
     "📐 Predictor Analysis",
 ]
 
-(tab_methods, tab_guide, tab_explorer, tab_performance, tab_predictors) = st.tabs(TAB_LABELS)
+(tab_methods, tab_guide, tab_tech, tab_explorer, tab_performance, tab_predictors) = st.tabs(TAB_LABELS)
 
 _sentinel_val = st.text_input(
     "active_tab_bridge",
@@ -653,7 +659,7 @@ st.components.v1.html(
                       && el.value !== null
                       && (el.value === '0' || el.value === '1'
                           || el.value === '2' || el.value === '3'
-                          || el.value === '4'));
+                          || el.value === '4' || el.value === '5'));
         }}
 
         function setTab(idx) {{
@@ -722,7 +728,19 @@ with tab_guide:
         )
 
 # ============================================================
-# TAB 3 — RESULTS EXPLORER
+# TAB 3 — TECHNICAL METHODS
+# ============================================================
+with tab_tech:
+    if TECH_FILE.exists():
+        st.markdown(TECH_FILE.read_text(encoding="utf-8"))
+    else:
+        st.warning(
+            f"Technical methods file not found at `{TECH_FILE}`. "
+            "Create `technical_methods.md` in the same folder as `app.py`."
+        )
+
+# ============================================================
+# TAB 4 — RESULTS EXPLORER
 # ============================================================
 with tab_explorer:
     available_isos = sorted(base_df[COL["country_code"]].unique())
@@ -902,7 +920,7 @@ with tab_explorer:
 
             
 # ============================================================
-# TAB 4 — MODEL PERFORMANCE
+# TAB 5 — MODEL PERFORMANCE
 # ============================================================
 with tab_performance:
 
@@ -1475,7 +1493,7 @@ with tab_performance:
             st.info("No residuals data loaded.")
 
 # ============================================================
-# TAB 5 — PREDICTOR ANALYSIS
+# TAB 6 — PREDICTOR ANALYSIS
 # ============================================================
 with tab_predictors:
 
