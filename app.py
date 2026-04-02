@@ -724,51 +724,25 @@ with tab_guide:
 # ============================================================
 # TAB 3 — RESULTS EXPLORER
 # ============================================================
-# ============================================================
-# TAB 3 — RESULTS EXPLORER
-# ============================================================
 with tab_explorer:
     available_isos = sorted(base_df[COL["country_code"]].unique())
-
-    # ── Interactive map (Scattergeo — on_select works reliably) ──
     if country_dim is not None and "Latitude" in country_dim.columns:
         map_data = pd.DataFrame({"iso": available_isos})
         map_data["name"] = map_data["iso"].map(code_to_name).fillna(map_data["iso"])
-        map_data = map_data.merge(
-            country_dim[[COL["country_code"], "Latitude", "Longitude"]].rename(
-                columns={COL["country_code"]: "iso"}
-            ),
-            on="iso", how="left",
-        ).dropna(subset=["Latitude", "Longitude"])
 
         sel_iso = (
             name_to_code.get(st.session_state.selected_country, None)
             if st.session_state.selected_country != "All Countries" else None
         )
+        map_data["colour_val"] = np.where(map_data["iso"] == sel_iso, 1.0, 0.3) if sel_iso else 0.5
         mc_col = MODEL_COLOURS.get(selected_model, TERRACOTTA)
 
-        map_data["marker_size"] = np.where(map_data["iso"] == sel_iso, 15, 7)
-        map_data["marker_color"] = np.where(
-            map_data["iso"] == sel_iso, mc_col, LIGHT_SLATE
-        )
-        map_data["marker_opacity"] = np.where(
-            map_data["iso"] == sel_iso, 1.0, 0.6
-        )
-
-        fig_map = go.Figure()
-        fig_map.add_trace(go.Scattergeo(
-            lat=map_data["Latitude"],
-            lon=map_data["Longitude"],
-            text=map_data["name"],
-            customdata=map_data["iso"].values,
+        fig_map = go.Figure(go.Choropleth(
+            locations=map_data["iso"], locationmode="ISO-3",
+            z=map_data["colour_val"], text=map_data["name"],
             hovertemplate="<b>%{text}</b><extra></extra>",
-            marker=dict(
-                size=map_data["marker_size"],
-                color=map_data["marker_color"].tolist(),
-                opacity=map_data["marker_opacity"].tolist(),
-                line=dict(width=0.5, color="white"),
-            ),
-            mode="markers",
+            colorscale=[[0.0, WARM_BEIGE], [0.5, LIGHT_SLATE], [1.0, mc_col]],
+            showscale=False, marker_line_color="#ffffff", marker_line_width=0.5,
         ))
         fig_map.update_geos(
             showcoastlines=True, coastlinecolor=LIGHT_GRAY,
@@ -781,24 +755,17 @@ with tab_explorer:
             height=300, margin=dict(l=0, r=0, t=0, b=0),
             geo=dict(bgcolor="rgba(0,0,0,0)"),
         )
-
         event = st.plotly_chart(
-            fig_map, use_container_width=True,
-            on_select="rerun", key="scatter_map",
+            fig_map, use_container_width=True, on_select="rerun", key="choropleth_map"
         )
-
-        if event and event.selection and event.selection.get("points"):
-            pts = event.selection["points"]
+        if event and hasattr(event, "selection") and event.selection:
+            pts = event.selection.get("points", [])
             if pts:
-                pi = pts[0].get("point_index", None)
-                if pi is not None and pi < len(map_data):
-                    clicked_iso = map_data.iloc[pi]["iso"]
-                    clicked_name = code_to_name.get(clicked_iso, "")
-                    if clicked_name:
-                        if clicked_name == st.session_state.selected_country:
-                            st.session_state.selected_country = "All Countries"
-                        else:
-                            st.session_state.selected_country = clicked_name
+                ci = pts[0].get("point_index", None)
+                if ci is not None and ci < len(map_data):
+                    cn = code_to_name.get(map_data.iloc[ci]["iso"], "")
+                    if cn and cn != st.session_state.selected_country:
+                        st.session_state.selected_country = cn
                         st.rerun()
 
     df = base_df_yr
