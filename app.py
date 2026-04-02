@@ -316,6 +316,10 @@ st.markdown(f"""
 
     [data-testid="stSidebar"] {{ background: {CREAM}; }}
 
+    /* Compact radio buttons for sidebar controls */
+    [data-testid="stSidebar"] [data-testid="stRadio"] label {{ font-size: 0.82rem !important; }}
+    [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] {{ gap: 0.4rem; }}
+
     #MainMenu {{visibility: hidden;}} footer {{visibility: hidden;}} header {{visibility: hidden;}}
 </style>
 """, unsafe_allow_html=True)
@@ -363,10 +367,10 @@ if "selected_year" not in st.session_state:
 with st.sidebar:
     st.markdown("## φ Controls")
 
-    # ── Model / prediction / data type ────────────────────────
-    selected_model     = st.selectbox("Model Type",      all_model_types, index=0)
-    selected_pred      = st.selectbox("Prediction Type", all_pred_types,  index=0)
-    selected_data_type = st.selectbox("Data Type", ["Validated", "Predicted"], index=0)
+    # ── Model / prediction / data type (horizontal radio buttons) ──
+    selected_model     = st.radio("Model Type",      all_model_types,              index=0, horizontal=True)
+    selected_pred      = st.radio("Prediction Type",  all_pred_types,              index=0, horizontal=True)
+    selected_data_type = st.radio("Data Type",       ["Validated", "Predicted"],   index=0, horizontal=True)
 
     st.markdown("---")
 
