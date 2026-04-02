@@ -315,6 +315,51 @@ st.markdown(f"""
 
     [data-testid="stSidebar"] {{ background: {CREAM}; }}
 
+    /* ── Pill-style radio buttons for the sidebar controls ── */
+    [data-testid="stSidebar"] .stRadio > label {{
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: {ESPRESSO};
+        margin-bottom: 0.25rem;
+    }}
+    [data-testid="stSidebar"] .stRadio [role="radiogroup"] {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+    }}
+    [data-testid="stSidebar"] .stRadio [role="radiogroup"] label {{
+        background: {WARM_BEIGE};
+        border: 1.5px solid {LIGHT_GRAY};
+        border-radius: 20px;
+        padding: 0.3rem 0.85rem;
+        font-size: 0.8rem;
+        font-weight: 500;
+        color: {ESPRESSO};
+        cursor: pointer;
+        transition: all 0.15s ease;
+        white-space: nowrap;
+    }}
+    [data-testid="stSidebar"] .stRadio [role="radiogroup"] label:hover {{
+        background: {LIGHT_SLATE};
+        color: white;
+        border-color: {LIGHT_SLATE};
+    }}
+    [data-testid="stSidebar"] .stRadio [role="radiogroup"] label[data-checked="true"],
+    [data-testid="stSidebar"] .stRadio [role="radiogroup"] label:has(input:checked) {{
+        background: {SLATE_BLUE};
+        color: white;
+        border-color: {SLATE_BLUE};
+        font-weight: 600;
+    }}
+    /* Hide the default radio circle */
+    [data-testid="stSidebar"] .stRadio [role="radiogroup"] input[type="radio"] {{
+        display: none;
+    }}
+    /* Hide the radio dot/circle indicator */
+    [data-testid="stSidebar"] .stRadio [role="radiogroup"] label div[data-testid="stMarkdownContainer"] {{
+        margin: 0;
+    }}
+
     #MainMenu {{visibility: hidden;}} footer {{visibility: hidden;}} header {{visibility: hidden;}}
 </style>
 """, unsafe_allow_html=True)
@@ -362,10 +407,30 @@ if "selected_year" not in st.session_state:
 with st.sidebar:
     st.markdown("## φ Controls")
 
-    # ── Model / prediction / data type ────────────────────────
-    selected_model     = st.selectbox("Model Type",      all_model_types, index=0)
-    selected_pred      = st.selectbox("Prediction Type", all_pred_types,  index=0)
-    selected_data_type = st.selectbox("Data Type", ["Validated", "Predicted"], index=0)
+    # ── Model / prediction / data type — RADIO BUTTONS ────────
+    selected_model = st.radio(
+        "Model Type",
+        all_model_types,
+        index=0,
+        horizontal=True,
+        key="radio_model_type",
+    )
+
+    selected_pred = st.radio(
+        "Prediction Type",
+        all_pred_types,
+        index=0,
+        horizontal=True,
+        key="radio_pred_type",
+    )
+
+    selected_data_type = st.radio(
+        "Data Type",
+        ["Validated", "Predicted"],
+        index=0,
+        horizontal=True,
+        key="radio_data_type",
+    )
 
     st.markdown("---")
 
@@ -426,8 +491,6 @@ with st.sidebar:
         _cascade_sub = _cascade_sub[_cascade_sub[COL["sub_region"]] == selected_subregion]
 
     # ── 4. Country (cascades from year + region + sub-region) ─
-    # Reset-on-conflict: if the stored country is no longer in the
-    # available list given the current region/sub-region, clear it.
     avail_isos_cascade  = sorted(_cascade_sub[COL["country_code"]].unique())
     country_names_avail = sorted([code_to_name.get(c, c) for c in avail_isos_cascade])
 
@@ -829,19 +892,46 @@ with tab_explorer:
             if is_validated:
                 om = ~np.isnan(obs)
                 if om.any():
+                    _obs_err = np.where(
+                        obs[om] > 0,
+                        (pred[om] - obs[om]) / obs[om] * 100,
+                        np.nan,
+                    )
+                    _obs_custom_single = np.stack([
+                        obs[om], pred[om], _obs_err,
+                    ], axis=-1)
                     fig.add_trace(go.Scatter(
                         x=pct[om], y=obs[om], mode="lines+markers",
                         marker=dict(size=4, color=OBS_COLOUR, symbol="diamond"),
                         line=dict(color=OBS_COLOUR, width=2, dash="dot"),
                         name="Observed",
+                        customdata=_obs_custom_single,
+                        hovertemplate=(
+                            "<b>Percentile %{x:.0f}</b><br>"
+                            "Observed: %{customdata[0]:.3f} $/day<br>"
+                            "Predicted: %{customdata[1]:.3f} $/day<br>"
+                            "Error: %{customdata[2]:.1f}%<extra></extra>"
+                        ),
                     ))
         else:
             has_lo = COL["lower_predictive_band"] in df.columns
             has_hi = COL["upper_predictive_band"] in df.columns
+            has_obs = COL["observed_consumption"] in df.columns
             agg_d  = {"pred_med": (COL["predicted_consumption"], "median")}
             if has_lo: agg_d["ci_lo"] = (COL["lower_predictive_band"], "median")
             if has_hi: agg_d["ci_hi"] = (COL["upper_predictive_band"], "median")
+            if has_obs: agg_d["obs_med"] = (COL["observed_consumption"], "median")
             agg = df.groupby(COL["percentile"]).agg(**agg_d).reset_index()
+            # Compute median percentage error where observed is available
+            if has_obs and "obs_med" in agg.columns:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    agg["pct_err"] = np.where(
+                        agg["obs_med"] > 0,
+                        (agg["pred_med"] - agg["obs_med"]) / agg["obs_med"] * 100,
+                        np.nan,
+                    )
+            else:
+                agg["pct_err"] = np.nan
             if show_ci and has_lo and has_hi:
                 ca = agg.dropna(subset=["ci_lo", "ci_hi"])
                 if len(ca) > 0:
@@ -851,12 +941,27 @@ with tab_explorer:
                         fill="toself", fillcolor=cc_col, line=dict(width=0),
                         name="90% CI (Median)", hoverinfo="skip",
                     ))
+            # Build customdata for predicted median hover
+            _pred_custom_cols = [agg["pred_med"]]
+            if "obs_med" in agg.columns:
+                _pred_custom_cols.append(agg["obs_med"])
+            else:
+                _pred_custom_cols.append(pd.Series(np.full(len(agg), np.nan)))
+            _pred_custom_cols.append(agg["pct_err"])
+            _pred_custom = np.stack([c.values for c in _pred_custom_cols], axis=-1)
             fig.add_trace(go.Scatter(
                 x=agg[COL["percentile"]], y=agg["pred_med"],
                 mode="lines+markers",
                 marker=dict(size=4, color=mc_col),
                 line=dict(color=mc_col, width=2.5),
                 name=f"Predicted Median ({selected_model})",
+                customdata=_pred_custom,
+                hovertemplate=(
+                    "<b>Percentile %{x:.0f}</b><br>"
+                    "Predicted (median): %{customdata[0]:.3f} $/day<br>"
+                    "Observed (median): %{customdata[1]:.3f} $/day<br>"
+                    "Error: %{customdata[2]:.1f}%<extra></extra>"
+                ),
             ))
             if is_validated:
                 obs_r = df.dropna(subset=[COL["observed_consumption"]])
@@ -864,12 +969,29 @@ with tab_explorer:
                     ao = obs_r.groupby(COL["percentile"]).agg(
                         med=(COL["observed_consumption"], "median")
                     ).reset_index()
+                    # Merge predicted median back to compute error on observed trace too
+                    ao = ao.merge(
+                        agg[[COL["percentile"], "pred_med", "pct_err"]],
+                        on=COL["percentile"], how="left",
+                    )
+                    _obs_custom = np.stack([
+                        ao["med"].values,
+                        ao["pred_med"].values if "pred_med" in ao.columns else np.full(len(ao), np.nan),
+                        ao["pct_err"].values if "pct_err" in ao.columns else np.full(len(ao), np.nan),
+                    ], axis=-1)
                     fig.add_trace(go.Scatter(
                         x=ao[COL["percentile"]], y=ao["med"],
                         mode="lines+markers",
                         marker=dict(size=4, color=OBS_COLOUR, symbol="diamond"),
                         line=dict(color=OBS_COLOUR, width=2, dash="dot"),
                         name="Observed Median",
+                        customdata=_obs_custom,
+                        hovertemplate=(
+                            "<b>Percentile %{x:.0f}</b><br>"
+                            "Observed (median): %{customdata[0]:.3f} $/day<br>"
+                            "Predicted (median): %{customdata[1]:.3f} $/day<br>"
+                            "Error: %{customdata[2]:.1f}%<extra></extra>"
+                        ),
                     ))
 
         tp = [selected_name if selected_name != "All Countries" else "All Countries"]
@@ -900,7 +1022,7 @@ with tab_explorer:
                 use_container_width=True, hide_index=True, height=400,
             )
 
-            
+
 # ============================================================
 # TAB 4 — MODEL PERFORMANCE
 # ============================================================
@@ -1182,16 +1304,21 @@ with tab_performance:
     if len(_perf_df) > 0:
         pr = []
         for (pt, p), g in _perf_df.groupby([COL["prediction_type"], COL["percentile"]]):
-            r = g[COL["predicted_consumption"]].values - g[COL["observed_consumption"]].values
+            obs_vals  = g[COL["observed_consumption"]].values
+            pred_vals = g[COL["predicted_consumption"]].values
+            r = pred_vals - obs_vals
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ape = np.where(obs_vals > 0, np.abs(r / obs_vals), np.nan)
             pr.append({
                 COL["prediction_type"]: pt,
                 COL["percentile"]:      p,
                 MC["rmse_cons"]:        np.sqrt(np.mean(r ** 2)),
                 MC["mae_cons"]:         np.mean(np.abs(r)),
+                MC["mape_pct"]:         float(np.nanmean(ape) * 100),
             })
         pm = pd.DataFrame(pr)
         if len(pm) > 0:
-            mo  = {"RMSE": MC["rmse_cons"], "MAE": MC["mae_cons"]}
+            mo  = {"RMSE": MC["rmse_cons"], "MAE": MC["mae_cons"], "MAPE %": MC["mape_pct"]}
             sl = st.selectbox("Metric", list(mo.keys()), index=0, key="dp_m")
             fig_p = px.line(
                 pm, x=COL["percentile"], y=mo[sl],
