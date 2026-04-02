@@ -761,13 +761,19 @@ with tab_explorer:
         if event and hasattr(event, "selection") and event.selection:
             pts = event.selection.get("points", [])
             if pts:
-                ci = pts[0].get("point_index", None)
-                if ci is not None and ci < len(map_data):
-                    cn = code_to_name.get(map_data.iloc[ci]["iso"], "")
+                # Choropleth provides 'location' (the ISO code) directly
+                loc = pts[0].get("location", None)
+                if loc is None:
+                    # Fallback: try point_index
+                    ci = pts[0].get("point_index", None)
+                    if ci is not None and ci < len(map_data):
+                        loc = map_data.iloc[ci]["iso"]
+                if loc:
+                    cn = code_to_name.get(loc, "")
                     if cn and cn != st.session_state.selected_country:
                         st.session_state.selected_country = cn
-                        st.rerun()
-
+                        st.rerun()        
+                        
     df = base_df_yr
     if len(df) == 0:
         st.warning("No data for the selected filters.")
