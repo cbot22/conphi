@@ -726,6 +726,26 @@ with tab_guide:
 # ============================================================
 with tab_explorer:
     available_isos = sorted(base_df[COL["country_code"]].unique())
+
+    # ── Hidden bridge input for map clicks ────────────────────
+    _map_click_val = st.text_input(
+        "map_click_bridge",
+        value="",
+        key="_map_click_iso",
+        label_visibility="collapsed",
+    )
+    if _map_click_val and _map_click_val in code_to_name:
+        clicked_name = code_to_name[_map_click_val]
+        if clicked_name == st.session_state.selected_country:
+            # Toggle off: click same country again → deselect
+            st.session_state.selected_country = "All Countries"
+        else:
+            st.session_state.selected_country = clicked_name
+        # Clear the bridge so it doesn't re-trigger
+        st.session_state["_map_click_iso"] = ""
+        st.rerun()
+
+    # ── Choropleth via components.html (Plotly.js click works) ─
     if country_dim is not None and "Latitude" in country_dim.columns:
         map_data = pd.DataFrame({"iso": available_isos})
         map_data["name"] = map_data["iso"].map(code_to_name).fillna(map_data["iso"])
@@ -734,178 +754,90 @@ with tab_explorer:
             name_to_code.get(st.session_state.selected_country, None)
             if st.session_state.selected_country != "All Countries" else None
         )
-        map_data["colour_val"] = np.where(map_data["iso"] == sel_iso, 1.0, 0.3) if sel_iso else 0.5
+        map_data["colour_val"] = (
+            np.where(map_data["iso"] == sel_iso, 1.0, 0.3)
+            if sel_iso else 0.5
+        )
         mc_col = MODEL_COLOURS.get(selected_model, TERRACOTTA)
 
-        fig_map = go.Figure(go.Choropleth(
-            locations=map_data["iso"], locationmode="ISO-3",
-            z=map_data["colour_val"], text=map_data["name"],
-            hovertemplate="<b>%{text}</b><extra></extra>",
-            colorscale=[[0.0, WARM_BEIGE], [0.5, LIGHT_SLATE], [1.0, mc_col]],
-            showscale=False, marker_line_color="#ffffff", marker_line_width=0.5,
-        ))
-        fig_map.update_geos(
-            showcoastlines=True, coastlinecolor=LIGHT_GRAY,
-            showland=True, landcolor="#f4f3ef",
-            showocean=True, oceancolor="#fbfaf7",
-            showcountries=True, countrycolor=LIGHT_GRAY,
-            showframe=False, projection_type="natural earth",
-        )
-        fig_map.update_layout(
-            height=300, margin=dict(l=0, r=0, t=0, b=0),
-            geo=dict(bgcolor="rgba(0,0,0,0)"),
-        )
-        event = st.plotly_chart(
-            fig_map, use_container_width=True, on_select="rerun", key="choropleth_map"
-        )
-        if event and hasattr(event, "selection") and event.selection:
-            pts = event.selection.get("points", [])
-            if pts:
-                ci = pts[0].get("point_index", None)
-                if ci is not None and ci < len(map_data):
-                    cn = code_to_name.get(map_data.iloc[ci]["iso"], "")
-                    if cn and cn != st.session_state.selected_country:
-                        st.session_state.selected_country = cn
-                        st.rerun()
+        # Build the Plotly JSON for the choropleth
+        import json as _json
+
+        plotly_data = {
+            "data": [{
+                "type": "choropleth",
+                "locations": map_data["iso"].tolist(),
+                "locationmode": "ISO-3",
+                "z": map_data["colour_val"].tolist(),
+                "text": map_data["name"].tolist(),
+                "hovertemplate": "<b>%{text}</b><extra></extra>",
+                "colorscale": [
+                    [0.0, WARM_BEIGE], [0.5, LIGHT_SLATE], [1.0, mc_col],
+                ],
+                "showscale": False,
+                "marker": {"line": {"color": "#ffffff", "width": 0.5}},
+            }],
+            "layout": {
+                "height": 300,
+                "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
+                "geo": {
+                    "showcoastlines": True, "coastlinecolor": LIGHT_GRAY,
+                    "showland": True, "landcolor": "#f4f3ef",
+                    "showocean": True, "oceancolor": "#fbfaf7",
+                    "showcountries": True, "countrycolor": LIGHT_GRAY,
+                    "showframe": False, "projection": {"type": "natural earth"},
+                    "bgcolor": "rgba(0,0,0,0)",
+                },
+            },
+        }
+        plotly_json = _json.dumps(plotly_data)
+
+        map_html = f"""
+        <div id="conphi-map" style="width:100%;height:300px;"></div>
+        <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+        <script>
+        (function() {{
+            var spec = {plotly_json};
+            var div = document.getElementById('conphi-map');
+            Plotly.newPlot(div, spec.data, spec.layout, {{
+                displayModeBar: false,
+                scrollZoom: false
+            }}).then(function() {{
+                div.on('plotly_click', function(data) {{
+                    if (!data || !data.points || data.points.length === 0) return;
+                    var iso = data.points[0].location;
+                    if (!iso) return;
+
+                    // Find the hidden text input and set its value
+                    var inputs = window.parent.document.querySelectorAll(
+                        'input[type="text"]'
+                    );
+                    for (var i = 0; i < inputs.length; i++) {{
+                        var el = inputs[i];
+                        var container = el.closest('[data-testid="stTextInput"]');
+                        if (container && el.value === '') {{
+                            // Check it's our bridge (empty value, collapsed)
+                            var setter = Object.getOwnPropertyDescriptor(
+                                window.HTMLInputElement.prototype, 'value'
+                            ).set;
+                            setter.call(el, iso);
+                            el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                            el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                            break;
+                        }}
+                    }}
+                }});
+            }});
+        }})();
+        </script>
+        """
+        st.components.v1.html(map_html, height=310)
+        if sel_iso:
+            st.caption(f"Selected: **{code_to_name.get(sel_iso, sel_iso)}** · Click again to deselect, or use the sidebar dropdown.")
+        else:
+            st.caption("Click a country on the map to filter, or use the sidebar dropdown.")
 
     df = base_df_yr
-    if len(df) == 0:
-        st.warning("No data for the selected filters.")
-    else:
-        val_df    = df.dropna(subset=[COL["observed_consumption"], COL["predicted_consumption"]])
-        n_surveys = count_surveys(df)
-        r2_d, mape_d = None, None
-        if len(val_df) > 0:
-            ov   = val_df[COL["observed_consumption"]].values
-            pv   = val_df[COL["predicted_consumption"]].values
-            r2_d = r2_from_cols(ov, pv)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                ap = np.abs((pv - ov) / ov)
-                ap = ap[np.isfinite(ap)]
-                if len(ap) > 0:
-                    mape_d = np.mean(ap) * 100
-
-        st.markdown('<div class="section-header">Consumption Distribution</div>', unsafe_allow_html=True)
-        bh = ""
-        if r2_d   is not None: bh += f'<span class="metric-badge"><span class="label">R² </span><span class="value">{r2_d:.4f}</span></span>'
-        if mape_d is not None: bh += f'<span class="metric-badge"><span class="label">MAPE </span><span class="value">{mape_d:.1f}%</span></span>'
-        bh += f'<span class="metric-badge"><span class="label">Surveys </span><span class="value">{n_surveys:,}</span></span>'
-        bh += f'<span class="metric-badge"><span class="label">Percentiles </span><span class="value">{pct_range[0]}–{pct_range[1]}</span></span>'
-        st.markdown(bh, unsafe_allow_html=True)
-        st.markdown("")
-
-        is_single    = (selected_name != "All Countries") and (selected_year != "All Years")
-        is_validated = selected_data_type == "Validated"
-        fig    = go.Figure()
-        mc_col = MODEL_COLOURS.get(selected_model, TERRACOTTA)
-        cc_col = CI_COLOURS.get(selected_model, CI_COLOUR)
-
-        if is_single:
-            p_df = df.sort_values(COL["percentile"])
-            pct  = p_df[COL["percentile"]].values
-            pred = p_df[COL["predicted_consumption"]].values
-            obs  = p_df[COL["observed_consumption"]].values   if COL["observed_consumption"]   in p_df.columns else np.full(len(p_df), np.nan)
-            lo   = p_df[COL["lower_predictive_band"]].values  if COL["lower_predictive_band"]  in p_df.columns else np.full(len(p_df), np.nan)
-            hi   = p_df[COL["upper_predictive_band"]].values  if COL["upper_predictive_band"]  in p_df.columns else np.full(len(p_df), np.nan)
-            err  = p_df[COL["percentage_error"]].values       if COL["percentage_error"]       in p_df.columns else np.full(len(p_df), np.nan)
-
-            if show_ci:
-                ok = ~(np.isnan(lo) | np.isnan(hi))
-                if ok.any():
-                    fig.add_trace(go.Scatter(
-                        x=np.concatenate([pct[ok], pct[ok][::-1]]),
-                        y=np.concatenate([hi[ok],  lo[ok][::-1]]),
-                        fill="toself", fillcolor=cc_col,
-                        line=dict(width=0), name="90% CI", hoverinfo="skip",
-                    ))
-            fig.add_trace(go.Scatter(
-                x=pct, y=pred, mode="lines+markers",
-                marker=dict(size=4, color=mc_col),
-                line=dict(color=mc_col, width=2.5),
-                name=f"Predicted ({selected_model})",
-                customdata=np.stack([pct, pred, obs, lo, hi, err], axis=-1),
-                hovertemplate=(
-                    "<b>Percentile %{customdata[0]:.0f}</b><br>"
-                    "Predicted: %{customdata[1]:.3f} $/day<br>"
-                    "Observed: %{customdata[2]:.3f} $/day<br>"
-                    "Lower CI: %{customdata[3]:.3f}<br>"
-                    "Upper CI: %{customdata[4]:.3f}<br>"
-                    "Error: %{customdata[5]:.1f}%<extra></extra>"
-                ),
-            ))
-            if is_validated:
-                om = ~np.isnan(obs)
-                if om.any():
-                    fig.add_trace(go.Scatter(
-                        x=pct[om], y=obs[om], mode="lines+markers",
-                        marker=dict(size=4, color=OBS_COLOUR, symbol="diamond"),
-                        line=dict(color=OBS_COLOUR, width=2, dash="dot"),
-                        name="Observed",
-                    ))
-        else:
-            has_lo = COL["lower_predictive_band"] in df.columns
-            has_hi = COL["upper_predictive_band"] in df.columns
-            agg_d  = {"pred_med": (COL["predicted_consumption"], "median")}
-            if has_lo: agg_d["ci_lo"] = (COL["lower_predictive_band"], "median")
-            if has_hi: agg_d["ci_hi"] = (COL["upper_predictive_band"], "median")
-            agg = df.groupby(COL["percentile"]).agg(**agg_d).reset_index()
-            if show_ci and has_lo and has_hi:
-                ca = agg.dropna(subset=["ci_lo", "ci_hi"])
-                if len(ca) > 0:
-                    fig.add_trace(go.Scatter(
-                        x=np.concatenate([ca[COL["percentile"]].values, ca[COL["percentile"]].values[::-1]]),
-                        y=np.concatenate([ca["ci_hi"].values, ca["ci_lo"].values[::-1]]),
-                        fill="toself", fillcolor=cc_col, line=dict(width=0),
-                        name="90% CI (Median)", hoverinfo="skip",
-                    ))
-            fig.add_trace(go.Scatter(
-                x=agg[COL["percentile"]], y=agg["pred_med"],
-                mode="lines+markers",
-                marker=dict(size=4, color=mc_col),
-                line=dict(color=mc_col, width=2.5),
-                name=f"Predicted Median ({selected_model})",
-            ))
-            if is_validated:
-                obs_r = df.dropna(subset=[COL["observed_consumption"]])
-                if len(obs_r) > 0:
-                    ao = obs_r.groupby(COL["percentile"]).agg(
-                        med=(COL["observed_consumption"], "median")
-                    ).reset_index()
-                    fig.add_trace(go.Scatter(
-                        x=ao[COL["percentile"]], y=ao["med"],
-                        mode="lines+markers",
-                        marker=dict(size=4, color=OBS_COLOUR, symbol="diamond"),
-                        line=dict(color=OBS_COLOUR, width=2, dash="dot"),
-                        name="Observed Median",
-                    ))
-
-        tp = [selected_name if selected_name != "All Countries" else "All Countries"]
-        if selected_year != "All Years": tp.append(str(selected_year))
-        tp.append(f"{selected_model} · {selected_pred}")
-        fig.update_layout(
-            template="plotly_white", height=560,
-            xaxis_title="Percentile",
-            yaxis_title="Consumption per Capita (2017 PPP $/day)",
-            legend=dict(orientation="h", y=-0.12, x=0),
-            margin=dict(l=60, r=20, t=50, b=70),
-            title=dict(text=" — ".join(tp), font=dict(size=14, color=ESPRESSO)),
-            hovermode="x unified",
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        with st.expander("View underlying data"):
-            dc = [c for c in [
-                COL["country_code"], COL["country_name"], COL["prediction_year"],
-                COL["percentile"], COL["predicted_consumption"],
-                COL["observed_consumption"],
-                COL["lower_predictive_band"], COL["upper_predictive_band"],
-                COL["percentage_error"], COL["model_type"],
-                COL["prediction_type"], COL["data_type"],
-            ] if c in df.columns]
-            st.dataframe(
-                df[dc].sort_values([COL["country_code"], COL["prediction_year"], COL["percentile"]]),
-                use_container_width=True, hide_index=True, height=400,
-            )
 
 # ============================================================
 # TAB 4 — MODEL PERFORMANCE
