@@ -726,26 +726,6 @@ with tab_guide:
 # ============================================================
 with tab_explorer:
     available_isos = sorted(base_df[COL["country_code"]].unique())
-
-    # ── Hidden bridge input for map clicks ────────────────────
-    _map_click_val = st.text_input(
-        "map_click_bridge",
-        value="",
-        key="_map_click_iso",
-        label_visibility="collapsed",
-    )
-    if _map_click_val and _map_click_val in code_to_name:
-        clicked_name = code_to_name[_map_click_val]
-        if clicked_name == st.session_state.selected_country:
-            # Toggle off: click same country again → deselect
-            st.session_state.selected_country = "All Countries"
-        else:
-            st.session_state.selected_country = clicked_name
-        # Clear the bridge so it doesn't re-trigger
-        st.session_state["_map_click_iso"] = ""
-        st.rerun()
-
-    # ── Choropleth via components.html (Plotly.js click works) ─
     if country_dim is not None and "Latitude" in country_dim.columns:
         map_data = pd.DataFrame({"iso": available_isos})
         map_data["name"] = map_data["iso"].map(code_to_name).fillna(map_data["iso"])
@@ -760,82 +740,26 @@ with tab_explorer:
         )
         mc_col = MODEL_COLOURS.get(selected_model, TERRACOTTA)
 
-        # Build the Plotly JSON for the choropleth
-        import json as _json
-
-        plotly_data = {
-            "data": [{
-                "type": "choropleth",
-                "locations": map_data["iso"].tolist(),
-                "locationmode": "ISO-3",
-                "z": map_data["colour_val"].tolist(),
-                "text": map_data["name"].tolist(),
-                "hovertemplate": "<b>%{text}</b><extra></extra>",
-                "colorscale": [
-                    [0.0, WARM_BEIGE], [0.5, LIGHT_SLATE], [1.0, mc_col],
-                ],
-                "showscale": False,
-                "marker": {"line": {"color": "#ffffff", "width": 0.5}},
-            }],
-            "layout": {
-                "height": 300,
-                "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
-                "geo": {
-                    "showcoastlines": True, "coastlinecolor": LIGHT_GRAY,
-                    "showland": True, "landcolor": "#f4f3ef",
-                    "showocean": True, "oceancolor": "#fbfaf7",
-                    "showcountries": True, "countrycolor": LIGHT_GRAY,
-                    "showframe": False, "projection": {"type": "natural earth"},
-                    "bgcolor": "rgba(0,0,0,0)",
-                },
-            },
-        }
-        plotly_json = _json.dumps(plotly_data)
-
-        map_html = f"""
-        <div id="conphi-map" style="width:100%;height:300px;"></div>
-        <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
-        <script>
-        (function() {{
-            var spec = {plotly_json};
-            var div = document.getElementById('conphi-map');
-            Plotly.newPlot(div, spec.data, spec.layout, {{
-                displayModeBar: false,
-                scrollZoom: false
-            }}).then(function() {{
-                div.on('plotly_click', function(data) {{
-                    if (!data || !data.points || data.points.length === 0) return;
-                    var iso = data.points[0].location;
-                    if (!iso) return;
-
-                    // Find the hidden text input and set its value
-                    var inputs = window.parent.document.querySelectorAll(
-                        'input[type="text"]'
-                    );
-                    for (var i = 0; i < inputs.length; i++) {{
-                        var el = inputs[i];
-                        var container = el.closest('[data-testid="stTextInput"]');
-                        if (container && el.value === '') {{
-                            // Check it's our bridge (empty value, collapsed)
-                            var setter = Object.getOwnPropertyDescriptor(
-                                window.HTMLInputElement.prototype, 'value'
-                            ).set;
-                            setter.call(el, iso);
-                            el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                            el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                            break;
-                        }}
-                    }}
-                }});
-            }});
-        }})();
-        </script>
-        """
-        st.components.v1.html(map_html, height=310)
-        if sel_iso:
-            st.caption(f"Selected: **{code_to_name.get(sel_iso, sel_iso)}** · Click again to deselect, or use the sidebar dropdown.")
-        else:
-            st.caption("Click a country on the map to filter, or use the sidebar dropdown.")
+        fig_map = go.Figure(go.Choropleth(
+            locations=map_data["iso"], locationmode="ISO-3",
+            z=map_data["colour_val"], text=map_data["name"],
+            hovertemplate="<b>%{text}</b><extra></extra>",
+            colorscale=[[0.0, WARM_BEIGE], [0.5, LIGHT_SLATE], [1.0, mc_col]],
+            showscale=False, marker_line_color="#ffffff", marker_line_width=0.5,
+        ))
+        fig_map.update_geos(
+            showcoastlines=True, coastlinecolor=LIGHT_GRAY,
+            showland=True, landcolor="#f4f3ef",
+            showocean=True, oceancolor="#fbfaf7",
+            showcountries=True, countrycolor=LIGHT_GRAY,
+            showframe=False, projection_type="natural earth",
+        )
+        fig_map.update_layout(
+            height=300, margin=dict(l=0, r=0, t=0, b=0),
+            geo=dict(bgcolor="rgba(0,0,0,0)"),
+        )
+        st.plotly_chart(fig_map, use_container_width=True)
+        st.caption("Use the **Country** dropdown in the sidebar to select a country.")
 
     df = base_df_yr
 
