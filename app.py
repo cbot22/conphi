@@ -3,13 +3,44 @@
 Con φ v1 — Consumption Distribution Explorer
 =============================================
 Streamlit dashboard for Con φ v1 model outputs.
-Data is read from Google Cloud Storage bucket: conphi
 
-To run locally (with GCS credentials):
+PATH CONFIGURATION
+------------------
+Two path variables at the top of this file control where the app
+reads its data from:
+
+  COLAB_BASE_DIR  — the Google Drive path used when generating outputs
+                    in Colab.  Kept here for reference; not used at
+                    runtime on your local machine.
+
+  DATA_DIR        — the LOCAL path the app actually reads from.
+                    Change this if you move the report folder.
+                    Default: G:\\My Drive\\conphi\\outputs\\conphi_v1_report
+
+To run:
+  cd C:\\Users\\chris\\Documents\\conphi_dashboard
   streamlit run app.py
 """
 
 from pathlib import Path
+
+# ============================================================
+# PATH CONFIGURATION  ← change DATA_DIR if your local path differs
+# ============================================================
+VERSION = "v1"
+
+# Google Drive path used in Colab (reference only — not used at runtime)
+COLAB_BASE_DIR = Path("/content/drive/MyDrive/conphi")
+
+# Local path — Google Drive for Desktop synced folder
+DATA_DIR = Path(r"G:\My Drive\conphi\outputs\conphi_v1_report")
+
+# Diagnostic subdirectories (relative to DATA_DIR)
+DIAG_USE_DIR  = DATA_DIR / "diagnostics_use"
+DIAG_WASE_DIR = DATA_DIR / "diagnostics_wase"
+
+# ============================================================
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -17,81 +48,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 
 # ============================================================
-# PATHS & GCS CONFIGURATION
-# ============================================================
-VERSION       = "v1"
-SCRIPT_DIR    = Path(__file__).resolve().parent
-METHODS_FILE  = SCRIPT_DIR / "methods.md"
-GUIDE_FILE    = SCRIPT_DIR / "guide.md"
-TECH_FILE     = SCRIPT_DIR / "technical_methods.md"
-
-BUCKET     = "conphi"
-GCS_PREFIX = f"gs://{BUCKET}/conphi_v1_report"
-
-# ============================================================
-# GCS AUTHENTICATION
-# ============================================================
-import gcsfs
-from google.oauth2 import service_account
-
-@st.cache_resource
-def _gcs_fs():
-    creds = service_account.Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=["https://www.googleapis.com/auth/cloud-platform"],
-    )
-    return gcsfs.GCSFileSystem(token=creds)
-
-# ============================================================
-# DATA LOADERS
-# ============================================================
-@st.cache_data
-def load_fact():
-    fs = _gcs_fs()
-    with fs.open(f"{GCS_PREFIX}/fact_predictions.parquet") as f:
-        return pd.read_parquet(f)
-
-@st.cache_data
-def load_country_dim():
-    fs = _gcs_fs()
-    with fs.open(f"{GCS_PREFIX}/dim_country.parquet") as f:
-        return pd.read_parquet(f)
-
-@st.cache_data
-def load_diag_parquet(model: str, name: str):
-    folder = "diagnostics_use" if model == "USE" else "diagnostics_wase"
-    fs     = _gcs_fs()
-    path   = f"{GCS_PREFIX}/{folder}/{name}"
-    try:
-        with fs.open(path) as f:
-            return pd.read_parquet(f)
-    except Exception:
-        return None
-
-@st.cache_data
-def load_diag_residuals(model: str):
-    prefix = "use" if model == "USE" else "wase"
-    return load_diag_parquet(model, f"{prefix}_diag_residuals.parquet")
-
-@st.cache_data
-def load_diag_params(model: str):
-    if model == "USE":
-        return load_diag_parquet(model, "use_diag_params_over_time.parquet")
-    else:
-        return load_diag_parquet(model, "wase_diag_params_forest.parquet")
-
-@st.cache_data
-def load_diag_coverage(model: str):
-    prefix = "use" if model == "USE" else "wase"
-    return load_diag_parquet(model, f"{prefix}_diag_coverage.parquet")
-
-@st.cache_data
-def load_diag_country_mae(model: str):
-    prefix = "use" if model == "USE" else "wase"
-    return load_diag_parquet(model, f"{prefix}_diag_country_mae.parquet")
-
-# ============================================================
-# COLUMN NAME MAP
+# COLUMN NAME MAP  (matches conphi_v1_report_prep.py)
 # ============================================================
 COL = {
     "country_code":                  "Country Code",
@@ -193,7 +150,7 @@ INCOME_PALETTE = {
 }
 
 # ============================================================
-# PARAMETER MAPS
+# PARAMETER MAPS  (must match diagnostic script output)
 # ============================================================
 PARAM_MAP_USE = {
     "beta0_pos":  "β⁺ Expansion Passthrough",
@@ -223,8 +180,10 @@ PARAM_MAP_WASE = {
     "rbf_weight_3":            "RBF Spline Weight 3",
 }
 
-LOG_CLIP       = (-20.0, 20.0)
+LOG_CLIP = (-20.0, 20.0)
+
 SUB_REGION_COL = "Sub-Region"
+
 
 # ============================================================
 # UTILITIES
@@ -232,10 +191,12 @@ SUB_REGION_COL = "Sub-Region"
 def safe_exp(x):
     return np.exp(np.clip(x, *LOG_CLIP))
 
+
 def hex_to_rgba(hex_color: str, alpha: float) -> str:
     h = hex_color.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"rgba({r},{g},{b},{alpha})"
+
 
 def count_surveys(df):
     val = df.dropna(subset=[COL["observed_consumption"]])
@@ -243,14 +204,60 @@ def count_surveys(df):
         return 0
     return val[[COL["country_code"], COL["prediction_year"]]].drop_duplicates().shape[0]
 
-def r2_from_cols(obs, pred):
-    mask  = ~(np.isnan(obs) | np.isnan(pred))
-    o, p  = obs[mask], pred[mask]
-    if len(o) < 2:
-        return np.nan
-    ss_r  = np.sum((p - o) ** 2)
-    ss_t  = np.sum((o - o.mean()) ** 2)
-    return float(1 - ss_r / ss_t) if ss_t > 1e-8 else np.nan
+
+# ============================================================
+# DATA LOADERS
+# ============================================================
+@st.cache_data
+def load_fact():
+    fp = DATA_DIR / "fact_predictions.parquet"
+    if not fp.exists():
+        return None
+    return pd.read_parquet(fp)
+
+
+@st.cache_data
+def load_country_dim():
+    fp = DATA_DIR / "dim_country.parquet"
+    if not fp.exists():
+        return None
+    return pd.read_parquet(fp)
+
+
+@st.cache_data
+def load_diag_parquet(model: str, name: str):
+    base = DIAG_USE_DIR if model == "USE" else DIAG_WASE_DIR
+    fp   = base / name
+    if not fp.exists():
+        return None
+    return pd.read_parquet(fp)
+
+
+@st.cache_data
+def load_diag_residuals(model: str):
+    prefix = "use" if model == "USE" else "wase"
+    return load_diag_parquet(model, f"{prefix}_diag_residuals.parquet")
+
+
+@st.cache_data
+def load_diag_params(model: str):
+    if model == "USE":
+        return load_diag_parquet(model, "use_diag_params_over_time.parquet")
+    else:
+        return load_diag_parquet(model, "wase_diag_params_forest.parquet")
+
+
+@st.cache_data
+def load_diag_coverage(model: str):
+    prefix = "use" if model == "USE" else "wase"
+    return load_diag_parquet(model, f"{prefix}_diag_coverage.parquet")
+
+
+@st.cache_data
+def load_diag_country_mae(model: str):
+    prefix = "use" if model == "USE" else "wase"
+    return load_diag_parquet(model, f"{prefix}_diag_country_mae.parquet")
+
 
 # ============================================================
 # APP CONFIG
@@ -260,28 +267,6 @@ st.set_page_config(
     page_icon="φ",
     layout="wide",
     initial_sidebar_state="expanded",
-)
-
-# Scroll position preservation
-st.components.v1.html(
-    """
-    <script>
-        window.parent.document.querySelector('.main').addEventListener('scroll', function() {
-            window.parent._streamlit_scroll_pos = this.scrollTop;
-        });
-        const observer = new MutationObserver(function() {
-            const main = window.parent.document.querySelector('.main');
-            if (window.parent._streamlit_scroll_pos && main) {
-                main.scrollTop = window.parent._streamlit_scroll_pos;
-            }
-        });
-        observer.observe(
-            window.parent.document.querySelector('.main'),
-            { childList: true, subtree: true }
-        );
-    </script>
-    """,
-    height=0,
 )
 
 st.markdown(f"""
@@ -304,9 +289,6 @@ st.markdown(f"""
     .section-header {{ font-size: 1.05rem; font-weight: 700; color: {ESPRESSO}; margin: 1.5rem 0 0.5rem 0; padding-bottom: 0.3rem; border-bottom: 2px solid {LIGHT_SLATE}; }}
     .section-sub {{ font-size: 0.82rem; color: {SLATE_BLUE}; margin: -0.3rem 0 0.7rem 0; line-height: 1.5; }}
 
-    .perf-summary {{ background: {CREAM}; border-left: 4px solid {LIGHT_SLATE}; border-radius: 4px; padding: 0.9rem 1.2rem; margin: 0.8rem 0 1.2rem 0; font-size: 0.88rem; color: {ESPRESSO}; line-height: 1.65; }}
-    .perf-summary strong {{ color: {ESPRESSO}; }}
-
     .summary-table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; margin: 1rem 0; }}
     .summary-table th {{ background: {ESPRESSO}; color: {CREAM}; padding: 0.6rem 0.8rem; text-align: right; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }}
     .summary-table th:first-child, .summary-table th:nth-child(2) {{ text-align: left; }}
@@ -316,29 +298,39 @@ st.markdown(f"""
 
     [data-testid="stSidebar"] {{ background: {CREAM}; }}
 
-    /* Compact radio buttons for sidebar controls */
-    [data-testid="stSidebar"] [data-testid="stRadio"] label {{ font-size: 0.82rem !important; }}
-    [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] {{ gap: 0.4rem; }}
+    [data-testid="stSlider"] [role="slider"] {{
+        background-color: {SLATE_BLUE} !important;
+        border-color: {SLATE_BLUE} !important;
+        box-shadow: none !important;
+    }}
+    [data-testid="stToggle"] label > span:first-of-type {{ background-color: {LIGHT_GRAY} !important; }}
+    [data-testid="stToggle"] input:checked + label > span:first-of-type,
+    [data-testid="stToggle"] label[data-checked="true"] > span:first-of-type {{
+        background-color: {SLATE_BLUE} !important;
+    }}
+
+    .methods-content {{ color: {ESPRESSO}; line-height: 1.7; }}
+    .methods-content h2 {{ color: {ESPRESSO}; font-weight: 700; margin-top: 1.5rem; border-bottom: 2px solid {LIGHT_SLATE}; padding-bottom: 0.3rem; }}
+    .methods-content h3 {{ color: {SLATE_BLUE}; font-weight: 600; margin-top: 1.2rem; }}
+    .methods-content p {{ margin-bottom: 0.8rem; }}
 
     #MainMenu {{visibility: hidden;}} footer {{visibility: hidden;}} header {{visibility: hidden;}}
 </style>
 """, unsafe_allow_html=True)
 
-# ── Load core data ─────────────────────────────────────────────
+
+# ── Load core data ────────────────────────────────────────────
 fact        = load_fact()
 country_dim = load_country_dim()
 
 if fact is None:
     st.error(
-        f"Could not load `fact_predictions.parquet` from GCS bucket `{BUCKET}`.\n\n"
-        "Check that the bucket exists, files have been uploaded, and secrets are configured correctly."
+        f"Could not load `fact_predictions.parquet` from:\n\n"
+        f"`{DATA_DIR}`\n\n"
+        "Check that `DATA_DIR` at the top of `app.py` points to your "
+        "local `conphi_v1_report/` folder."
     )
     st.stop()
-
-# Derive WFP ISO set from fact table
-wfp_isos = set(
-    fact.loc[fact[COL["wfp_country"]] == "Yes", COL["country_code"]].unique()
-)
 
 all_isos = sorted(fact[COL["country_code"]].unique())
 if country_dim is not None and COL["country_name"] in country_dim.columns:
@@ -360,103 +352,59 @@ if "selected_country" not in st.session_state:
 if "selected_year" not in st.session_state:
     st.session_state.selected_year = "All Years"
 
+
 # ============================================================
-# SIDEBAR  — Year → Region → Sub-Region → Country (cascade)
-#            with reset-on-conflict for country
+# SIDEBAR
 # ============================================================
 with st.sidebar:
     st.markdown("## φ Controls")
-
-    # ── Model / prediction / data type (horizontal radio buttons) ──
-    selected_model     = st.radio("Model Type",      all_model_types,              index=0, horizontal=True)
-    selected_pred      = st.radio("Prediction Type",  all_pred_types,              index=0, horizontal=True)
-    selected_data_type = st.radio("Data Type",       ["Validated", "Predicted"],   index=0, horizontal=True)
-
+    selected_model     = st.selectbox("Model Type",      all_model_types, index=0)
+    selected_pred      = st.selectbox("Prediction Type", all_pred_types,  index=0)
+    selected_data_type = st.selectbox("Data Type", ["Validated", "Predicted"], index=0)
     st.markdown("---")
-
-    # ── Display options ────────────────────────────────────────
-    show_ci   = st.toggle("Show 90% Confidence Bands", value=True, key="ci_toggle")
+    show_ci  = st.toggle("Show 90% Confidence Bands", value=False, key="ci_toggle")
+    st.markdown("---")
     pct_range = st.slider("Percentile Range", min_value=1, max_value=99,
                           value=(1, 99), step=1)
-
     st.markdown("---")
 
-    # ── Cascading filters: Year → Region → Sub-Region → Country → WFP ──
-    # Build a base frame scoped to the current model/pred/data selections
-    _cascade_base = fact[
-        (fact[COL["model_type"]]      == selected_model) &
-        (fact[COL["prediction_type"]] == selected_pred)
-    ].copy()
-    if selected_data_type == "Validated":
-        _cascade_base = _cascade_base[_cascade_base[COL["data_type"]] == "Validated"]
-
-    # ── 1. Year ───────────────────────────────────────────────
-    avail_years = sorted(_cascade_base[COL["prediction_year"]].dropna().astype(int).unique())
-    cur_y       = st.session_state.selected_year
-    opts_y      = ["All Years"] + [str(y) for y in avail_years]
-    if cur_y not in opts_y:
-        cur_y = "All Years"
-    idx_y         = opts_y.index(cur_y)
-    selected_year = st.selectbox("Year", opts_y, index=idx_y, key="sidebar_year")
-    st.session_state.selected_year = selected_year
-
-    _cascade_yr = _cascade_base.copy()
-    if selected_year != "All Years":
-        _cascade_yr = _cascade_yr[_cascade_yr[COL["prediction_year"]] == int(selected_year)]
-
-    # ── 2. Region (cascades from year) ────────────────────────
-    if COL["region"] in _cascade_yr.columns:
-        avail_regions_cascade = sorted(_cascade_yr[COL["region"]].dropna().unique())
-    else:
-        avail_regions_cascade = all_regions
-    selected_region = st.selectbox(
-        "Region", ["All"] + avail_regions_cascade, index=0, key="sidebar_region"
-    )
-
-    _cascade_region = _cascade_yr.copy()
-    if selected_region != "All" and COL["region"] in _cascade_region.columns:
-        _cascade_region = _cascade_region[_cascade_region[COL["region"]] == selected_region]
-
-    # ── 3. Sub-Region (cascades from year + region) ───────────
-    if COL["sub_region"] in _cascade_region.columns:
-        avail_subregions = sorted(_cascade_region[COL["sub_region"]].dropna().unique())
-    else:
-        avail_subregions = all_subregions
-    selected_subregion = st.selectbox(
-        "Sub-Region", ["All"] + avail_subregions, index=0, key="sidebar_subregion"
-    )
-
-    _cascade_sub = _cascade_region.copy()
-    if selected_subregion != "All" and COL["sub_region"] in _cascade_sub.columns:
-        _cascade_sub = _cascade_sub[_cascade_sub[COL["sub_region"]] == selected_subregion]
-
-    # ── 4. Country (cascades from year + region + sub-region) ─
-    # Reset-on-conflict: if the stored country is no longer in the
-    # available list given the current region/sub-region, clear it.
-    avail_isos_cascade  = sorted(_cascade_sub[COL["country_code"]].unique())
-    country_names_avail = sorted([code_to_name.get(c, c) for c in avail_isos_cascade])
-
-    cur_c = st.session_state.selected_country
-    if cur_c not in ["All Countries"] + country_names_avail:
-        cur_c = "All Countries"
-        st.session_state.selected_country = "All Countries"
-
-    opts_c        = ["All Countries"] + country_names_avail
-    idx_c         = opts_c.index(cur_c)
+    country_names_all = sorted(code_to_name.values())
+    cur = st.session_state.selected_country
+    if cur not in ["All Countries"] + country_names_all:
+        cur = "All Countries"
+    opts_c       = ["All Countries"] + country_names_all
+    idx_c        = opts_c.index(cur) if cur in opts_c else 0
     selected_name = st.selectbox("Country", opts_c, index=idx_c, key="sidebar_country")
     st.session_state.selected_country = selected_name
 
-    # ── 5. WFP scope ──────────────────────────────────────────
-    selected_wfp = st.selectbox(
-        "WFP | All Countries",
-        ["All", "WFP Countries"],
-        index=0,
-        key="sidebar_wfp",
-    )
+    _tmp = fact[
+        (fact[COL["model_type"]]      == selected_model) &
+        (fact[COL["prediction_type"]] == selected_pred)
+    ]
+    if selected_data_type == "Validated":
+        _tmp = _tmp[_tmp[COL["data_type"]] == "Validated"]
+    _tmp = _tmp[
+        (_tmp[COL["percentile"]] >= pct_range[0]) &
+        (_tmp[COL["percentile"]] <= pct_range[1])
+    ]
+    if selected_name != "All Countries":
+        _tmp = _tmp[_tmp[COL["country_code"]] == name_to_code.get(selected_name, selected_name)]
 
+    avail_years = sorted(_tmp[COL["prediction_year"]].dropna().astype(int).unique())
+    cur_y  = st.session_state.selected_year
+    opts_y = ["All Years"] + [str(y) for y in avail_years]
+    if cur_y not in opts_y:
+        cur_y = "All Years"
+    idx_y        = opts_y.index(cur_y) if cur_y in opts_y else 0
+    selected_year = st.selectbox("Year", opts_y, index=idx_y, key="sidebar_year")
+    st.session_state.selected_year = selected_year
+
+    selected_region    = st.selectbox("Region",     ["All"] + all_regions,    index=0, key="sidebar_region")
+    selected_subregion = st.selectbox("Sub-Region", ["All"] + all_subregions, index=0, key="sidebar_subregion")
     st.markdown("---")
     st.markdown("**USE** — Update Survey Estimate  \n**WASE** — Without Any Survey Estimate")
     st.caption(f"Con φ {VERSION} · World Food Programme")
+
 
 # ============================================================
 # FILTER HELPERS
@@ -474,14 +422,12 @@ def apply_sidebar(df, force_validated=False):
         (out[COL["percentile"]] >= pct_range[0]) &
         (out[COL["percentile"]] <= pct_range[1])
     ]
-    if selected_wfp == "WFP Countries":
-        out = out[out[COL["wfp_country"]] == "Yes"]
+    if selected_name != "All Countries":
+        out = out[out[COL["country_code"]] == name_to_code.get(selected_name, selected_name)]
     if selected_region != "All" and COL["region"] in out.columns:
         out = out[out[COL["region"]] == selected_region]
     if selected_subregion != "All" and COL["sub_region"] in out.columns:
         out = out[out[COL["sub_region"]] == selected_subregion]
-    if selected_name != "All Countries":
-        out = out[out[COL["country_code"]] == name_to_code.get(selected_name, selected_name)]
     return out
 
 
@@ -489,8 +435,6 @@ def filter_diag_residuals(df):
     if df is None or len(df) == 0:
         return df
     out = df.copy()
-    if selected_wfp == "WFP Countries" and "iso" in out.columns:
-        out = out[out["iso"].isin(wfp_isos)]
     if "pred_type" in out.columns:
         out = out[out["pred_type"] == selected_pred]
     if "percentile" in out.columns:
@@ -498,6 +442,9 @@ def filter_diag_residuals(df):
             (out["percentile"] >= pct_range[0]) &
             (out["percentile"] <= pct_range[1])
         ]
+    if selected_name != "All Countries" and "iso" in out.columns:
+        iso = name_to_code.get(selected_name, selected_name)
+        out = out[out["iso"] == iso]
     if selected_region != "All" and "region" in out.columns:
         out = out[out["region"] == selected_region]
     if selected_subregion != "All":
@@ -505,9 +452,6 @@ def filter_diag_residuals(df):
             if col in out.columns:
                 out = out[out[col] == selected_subregion]
                 break
-    if selected_name != "All Countries" and "iso" in out.columns:
-        iso = name_to_code.get(selected_name, selected_name)
-        out = out[out["iso"] == iso]
     return out
 
 
@@ -516,6 +460,7 @@ base_df_yr = (
     base_df[base_df[COL["prediction_year"]] == int(selected_year)]
     if selected_year != "All Years" else base_df
 )
+
 
 # ============================================================
 # SHARED HELPERS
@@ -580,30 +525,44 @@ def _compute_grouped(df, group_col):
 
 
 def _prep_params(params_df, model: str):
+    """
+    Normalise a params dataframe so it always has columns:
+    param, param_label, pred_type, mean, sd, q05, q95
+    and a year column: target_year (USE) or focal_year (WASE).
+    Returns None if the dataframe is empty or missing required columns.
+    """
     if params_df is None or len(params_df) == 0:
         return None
+
     df = params_df.copy()
+
     aliases = {
-        "posterior_mean": "mean", "posterior_sd": "sd",
-        "posterior_q05": "q05", "hdi_3%": "q05",
-        "posterior_q95": "q95", "hdi_97%": "q95",
-        "parameter": "param",
+        "posterior_mean": "mean",
+        "posterior_sd":   "sd",
+        "posterior_q05":  "q05", "hdi_3%":  "q05",
+        "posterior_q95":  "q95", "hdi_97%": "q95",
+        "parameter":      "param",
     }
     df = df.rename(columns={k: v for k, v in aliases.items() if k in df.columns})
+
     if "param" not in df.columns:
         return None
+
     pmap = PARAM_MAP_USE if model == "USE" else PARAM_MAP_WASE
     if "param_label" not in df.columns:
         df["param_label"] = df["param"].map(pmap).fillna(df["param"])
+
     if "pred_type" not in df.columns and "mode" in df.columns:
         df["pred_type"] = df["mode"].apply(
             lambda m: "Nowcast" if m == "nowcast" else "Forecast"
         )
     if "pred_type" not in df.columns:
         df["pred_type"] = "Nowcast"
+
     for col in ["mean", "sd", "q05", "q95"]:
         if col not in df.columns:
             df[col] = np.nan
+
     return df
 
 
@@ -618,146 +577,130 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── Tab persistence ─────────────────────────────────────────────
-if "active_tab" not in st.session_state:
-    st.session_state.active_tab = 0
-
-TAB_LABELS = [
+(tab_methods, tab_explorer, tab_diagnostics,
+ tab_model_perf, tab_predictors) = st.tabs([
     "📖 Overview & Methods",
-    "🧭 User Guide",
-    "🔬 Technical Methods",
     "🌍 Results Explorer",
-    "📊 Model Performance",
+    "📊 Performance Metrics",
+    "🔬 Model Evaluation",
     "📐 Predictor Analysis",
-]
+])
 
-(tab_methods, tab_guide, tab_tech, tab_explorer, tab_performance, tab_predictors) = st.tabs(TAB_LABELS)
-
-_sentinel_val = st.text_input(
-    "active_tab_bridge",
-    value=str(st.session_state.active_tab),
-    key="_tab_sentinel",
-    label_visibility="collapsed",
-)
-try:
-    _incoming = int(_sentinel_val)
-    if 0 <= _incoming < len(TAB_LABELS):
-        st.session_state.active_tab = _incoming
-except (ValueError, TypeError):
-    pass
-
-st.components.v1.html(
-    f"""
-    <script>
-    (function() {{
-        const WANT = {st.session_state.active_tab};
-
-        function getSentinel() {{
-            return Array.from(
-                window.parent.document.querySelectorAll('input[type="text"]')
-            ).find(el => el.closest('[data-testid="stTextInput"]') !== null
-                      && el.value !== null
-                      && (el.value === '0' || el.value === '1'
-                          || el.value === '2' || el.value === '3'
-                          || el.value === '4' || el.value === '5'));
-        }}
-
-        function setTab(idx) {{
-            const sentinel = getSentinel();
-            if (!sentinel) return;
-            const setter = Object.getOwnPropertyDescriptor(
-                window.HTMLInputElement.prototype, 'value'
-            ).set;
-            setter.call(sentinel, String(idx));
-            sentinel.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            sentinel.dispatchEvent(new Event('change', {{ bubbles: true }}));
-        }}
-
-        function attachListeners(buttons) {{
-            buttons.forEach(function(btn, idx) {{
-                btn.addEventListener('click', function() {{ setTab(idx); }}, true);
-            }});
-        }}
-
-        function restoreAndAttach() {{
-            const tabList = window.parent.document.querySelector(
-                '[data-baseweb="tab-list"]'
-            );
-            if (!tabList) {{ setTimeout(restoreAndAttach, 60); return; }}
-
-            const buttons = tabList.querySelectorAll('button[role="tab"]');
-            if (buttons.length === 0) {{ setTimeout(restoreAndAttach, 60); return; }}
-
-            if (buttons[WANT] &&
-                buttons[WANT].getAttribute('aria-selected') !== 'true') {{
-                buttons[WANT].click();
-            }}
-
-            attachListeners(buttons);
-        }}
-
-        restoreAndAttach();
-    }})();
-    </script>
-    """,
-    height=0,
-)
 
 # ============================================================
 # TAB 1 — OVERVIEW & METHODS
 # ============================================================
 with tab_methods:
-    if METHODS_FILE.exists():
-        st.markdown(METHODS_FILE.read_text(encoding="utf-8"))
-    else:
-        st.warning(
-            f"Methods file not found at `{METHODS_FILE}`. "
-            "Create `methods.md` in the same folder as `app.py`."
-        )
+    st.markdown("""
+<div class="methods-content">
+
+## Con φ — Methodology
+
+The Con φ (pronounced *con fie*) model predicts household consumption in US Dollars
+(at 2017 purchasing power parity) for each percentile of the consumption distribution —
+from the poorest 1% to the richest 1% — across Low and Middle Income Countries.
+It contains two distinct sub-models, each designed for a different data situation:
+
+**Con φ ~ USE (Update Survey Estimate)** asks: *Given a country's most recent survey
+estimates of consumption, how do we project forward using GDP growth?* This model
+requires at least one prior consumption survey for the country.
+
+**Con φ ~ WASE (Without Any Survey Estimate)** asks: *What would we predict for this
+country if we had no consumption data at all, based on its current level of human
+and economic development?* This model requires only structural predictor data — no
+consumption survey is needed for the target country.
+
+The system can nowcast (estimate the current year) or forecast up to one year ahead.
+Estimates are updated each April and October, in line with the IMF's twice-yearly
+publication of economic indicators.
+
+## What data does the model use?
+
+The model uses publicly available data only. At the core of the system is the
+**World Bank Poverty and Inequality Platform (PIP)** dataset, which contains
+household consumption-expenditure estimates for each percentile of the population
+across over 100 countries and more than 1,000 surveys conducted since 1977.
+These survey estimates are the outcome variable — what the models are trying to
+predict or validate against.
+
+The main economic predictors come from the **IMF World Economic Outlook (WEO)**
+datasets, published twice yearly in April and October. Because past GDP estimates
+are regularly revised using household survey data — including the very surveys in
+the PIP dataset — using current revised estimates would introduce a look-ahead bias.
+To prevent this, the pipeline uses historical vintage WEO files: the dataset exactly
+as it was released at a given point in time, rather than current revised figures.
+
+The USE model uses only these two datasets. The WASE model additionally draws on
+structural country indicators sourced from the **Institute for Health Metrics and
+Evaluation (IHME)**, the **UN Inter-Agency Group for Child Mortality Estimation
+(UN IGME)**, and the **World Bank**: specifically, under-5 mortality rates, mean
+years of female education, the share of the population living in rural areas,
+government revenue and expenditure as a share of GDP, and natural resource rents
+as a share of GDP. These structural covariates are lagged by three years to reflect
+the typical publication delays that would apply in a genuine real-time scenario.
+
+## How does the model work?
+
+### Con φ ~ USE Model
+
+The USE model requires at least one prior consumption survey to project forward from.
+It builds on the finding that GDP growth passes through to household consumption
+with an empirically estimated coefficient, and extends this in two key ways.
+
+First, the model distinguishes between economic **expansions and contractions**.
+Contractions tend to hit households more sharply than expansions lift them, so the
+model estimates separate passthrough rates for positive and negative GDP growth,
+decomposing cumulative GDP growth year-by-year into its expansion and contraction
+components.
+
+Second, the passthrough is allowed to **vary across the consumption distribution**,
+capturing whether poorer or richer households tend to benefit proportionally more
+from growth. A Student-t likelihood provides robustness to outlier survey-to-survey
+consumption changes.
+
+### Con φ ~ WASE Model
+
+For countries without a recent consumption survey, the WASE model predicts the entire
+consumption distribution from scratch using only widely available structural indicators.
+
+The model represents log-consumption at each percentile as the sum of two components:
+a **level** capturing average living standards (driven by GDP per capita, mortality,
+rural share, education, fiscal variables), and a **shape** capturing inequality
+(varying across a spatial hierarchy of regions and subregions). Flexible RBF spline
+corrections along the percentile axis capture departures from the log-logistic baseline.
+
+Both models are estimated using **Stochastic Variational Inference (SVI)** implemented
+in NumPyro/JAX on GPU.
+
+## Validation
+
+Both models use a strict rolling Leave-One-Country-Out (LOCO) procedure that prevents
+look-ahead bias. IMF vintage files ensure only historically available GDP data is used.
+Structural covariates in WASE are lagged by three years.
+
+### Overall performance
+
+The USE model achieves R² ≈ 0.97 and MAE ≈ \$0.79–0.93/day (~9% MAPE) on validated
+rows. The WASE model achieves R² ≈ 0.74–0.75 and MAE ≈ \$3/day (~28–29% MAPE),
+reflecting the substantially harder task of predicting without any survey anchor.
+The two models are designed to complement each other: USE estimates take precedence
+where survey data are available, with WASE filling the remainder of the global picture.
+
+</div>
+""", unsafe_allow_html=True)
+
 
 # ============================================================
-# TAB 2 — USER GUIDE
-# ============================================================
-with tab_guide:
-    if GUIDE_FILE.exists():
-        st.markdown(GUIDE_FILE.read_text(encoding="utf-8"))
-    else:
-        st.warning(
-            f"Guide file not found at `{GUIDE_FILE}`. "
-            "Create `guide.md` in the same folder as `app.py`."
-        )
-
-# ============================================================
-# TAB 3 — TECHNICAL METHODS
-# ============================================================
-with tab_tech:
-    if TECH_FILE.exists():
-        st.markdown(TECH_FILE.read_text(encoding="utf-8"))
-    else:
-        st.warning(
-            f"Technical methods file not found at `{TECH_FILE}`. "
-            "Create `technical_methods.md` in the same folder as `app.py`."
-        )
-
-# ============================================================
-# TAB 4 — RESULTS EXPLORER
+# TAB 2 — RESULTS EXPLORER
 # ============================================================
 with tab_explorer:
     available_isos = sorted(base_df[COL["country_code"]].unique())
     if country_dim is not None and "Latitude" in country_dim.columns:
         map_data = pd.DataFrame({"iso": available_isos})
-        map_data["name"] = map_data["iso"].map(code_to_name).fillna(map_data["iso"])
-
-        sel_iso = (
-            name_to_code.get(st.session_state.selected_country, None)
-            if st.session_state.selected_country != "All Countries" else None
-        )
-        map_data["colour_val"] = (
-            np.where(map_data["iso"] == sel_iso, 1.0, 0.3)
-            if sel_iso else 0.5
-        )
+        map_data["name"]       = map_data["iso"].map(code_to_name).fillna(map_data["iso"])
+        sel_iso                = name_to_code.get(selected_name, None) if selected_name != "All Countries" else None
+        map_data["colour_val"] = np.where(map_data["iso"] == sel_iso, 1.0, 0.3) if sel_iso else 0.5
         mc_col = MODEL_COLOURS.get(selected_model, TERRACOTTA)
-
         fig_map = go.Figure(go.Choropleth(
             locations=map_data["iso"], locationmode="ISO-3",
             z=map_data["colour_val"], text=map_data["name"],
@@ -776,8 +719,18 @@ with tab_explorer:
             height=300, margin=dict(l=0, r=0, t=0, b=0),
             geo=dict(bgcolor="rgba(0,0,0,0)"),
         )
-        st.plotly_chart(fig_map, use_container_width=True)
-        st.caption("Use the **Country** dropdown in the sidebar to select a country.")
+        event = st.plotly_chart(
+            fig_map, use_container_width=True, on_select="rerun", key="choropleth_map"
+        )
+        if event and hasattr(event, "selection") and event.selection:
+            pts = event.selection.get("points", [])
+            if pts:
+                ci = pts[0].get("point_index", None)
+                if ci is not None and ci < len(map_data):
+                    cn = code_to_name.get(map_data.iloc[ci]["iso"], "")
+                    if cn and cn != st.session_state.selected_country:
+                        st.session_state.selected_country = cn
+                        st.rerun()
 
     df = base_df_yr
     if len(df) == 0:
@@ -789,7 +742,10 @@ with tab_explorer:
         if len(val_df) > 0:
             ov   = val_df[COL["observed_consumption"]].values
             pv   = val_df[COL["predicted_consumption"]].values
-            r2_d = r2_from_cols(ov, pv)
+            ss_r = np.sum((pv - ov) ** 2)
+            ss_t = np.sum((ov - ov.mean()) ** 2)
+            if ss_t > 1e-8:
+                r2_d = 1 - ss_r / ss_t
             with np.errstate(divide="ignore", invalid="ignore"):
                 ap = np.abs((pv - ov) / ov)
                 ap = ap[np.isfinite(ap)]
@@ -852,11 +808,21 @@ with tab_explorer:
                         marker=dict(size=4, color=OBS_COLOUR, symbol="diamond"),
                         line=dict(color=OBS_COLOUR, width=2, dash="dot"),
                         name="Observed",
+                        customdata=np.stack([pct[om], obs[om], pred[om], err[om]], axis=-1),
+                        hovertemplate=(
+                            "<b>Percentile %{customdata[0]:.0f}</b><br>"
+                            "Observed: %{customdata[1]:.3f} $/day<br>"
+                            "Predicted: %{customdata[2]:.3f} $/day<br>"
+                            "Error: %{customdata[3]:.1f}%<extra></extra>"
+                        ),
                     ))
         else:
             has_lo = COL["lower_predictive_band"] in df.columns
             has_hi = COL["upper_predictive_band"] in df.columns
-            agg_d  = {"pred_med": (COL["predicted_consumption"], "median")}
+            agg_d  = {
+                "pred_med": (COL["predicted_consumption"], "median"),
+                "n":        (COL["predicted_consumption"], "count"),
+            }
             if has_lo: agg_d["ci_lo"] = (COL["lower_predictive_band"], "median")
             if has_hi: agg_d["ci_hi"] = (COL["upper_predictive_band"], "median")
             agg = df.groupby(COL["percentile"]).agg(**agg_d).reset_index()
@@ -918,16 +884,275 @@ with tab_explorer:
                 use_container_width=True, hide_index=True, height=400,
             )
 
-            
-# ============================================================
-# TAB 5 — MODEL PERFORMANCE
-# ============================================================
-with tab_performance:
 
-    eval_model = selected_model
-    eval_colour = USE_COLOUR if eval_model == "USE" else WASE_COLOUR
+# ============================================================
+# TAB 3 — PERFORMANCE METRICS
+# ============================================================
+with tab_diagnostics:
+    fc1, _ = st.columns([1, 3])
+    with fc1:
+        dy        = sorted(fact[COL["prediction_year"]].dropna().astype(int).unique())
+        diag_year = st.selectbox("Year (diagnostics)", ["All"] + [str(y) for y in dy],
+                                 index=0, key="diag_year")
 
-    GROUPBY_COL_MAP = {
+    diag_df = apply_sidebar(fact, force_validated=True)
+    if diag_year != "All":
+        diag_df = diag_df[diag_df[COL["prediction_year"]] == int(diag_year)]
+    n_ds = count_surveys(diag_df)
+
+    st.markdown('<div class="section-header">Overall Metrics</div>', unsafe_allow_html=True)
+    if len(diag_df) > 0:
+        def cr(g):
+            o   = g[COL["observed_consumption"]].values
+            p   = g[COL["predicted_consumption"]].values
+            r   = p - o
+            sr  = np.sum(r ** 2)
+            st_ = np.sum((o - o.mean()) ** 2)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ap = np.abs(r / o)
+                ap = np.where(np.isfinite(ap), ap, np.nan)
+            return {
+                MC["n_obs"]:     len(g),
+                "Surveys":       count_surveys(g),
+                MC["r2_cons"]:   1 - sr / st_ if st_ > 1e-8 else np.nan,
+                MC["rmse_cons"]: np.sqrt(np.mean(r ** 2)),
+                MC["mae_cons"]:  np.mean(np.abs(r)),
+                MC["mape_pct"]:  np.nanmean(ap) * 100,
+                MC["bias_cons"]: np.mean(r),
+            }
+
+        rows = []
+        gc   = [c for c in [COL["model_type"], COL["prediction_type"]] if c in diag_df.columns]
+        for keys, grp in diag_df.groupby(gc, dropna=False):
+            if not isinstance(keys, tuple): keys = (keys,)
+            row = dict(zip(gc, keys))
+            row.update(cr(grp))
+            rows.append(row)
+        if rows:
+            summary = pd.DataFrame(rows)
+            dcols   = gc + [MC["n_obs"], "Surveys", MC["r2_cons"], MC["rmse_cons"],
+                            MC["mae_cons"], MC["mape_pct"], MC["bias_cons"]]
+            dcols   = [c for c in dcols if c in summary.columns]
+            html = '<table class="summary-table"><thead><tr>'
+            for c in dcols: html += f"<th>{c}</th>"
+            html += "</tr></thead><tbody>"
+            for _, row in summary.iterrows():
+                html += "<tr>"
+                for c in dcols:
+                    v = row[c]
+                    if c in [MC["n_obs"], "Surveys"]: html += f"<td>{int(v):,}</td>"
+                    elif c == MC["r2_cons"]:          html += f"<td>{v:.4f}</td>"
+                    elif c == MC["mape_pct"]:         html += f"<td>{v:.2f}</td>"
+                    elif isinstance(v, float):        html += f"<td>{v:.4f}</td>"
+                    else:                             html += f"<td>{v}</td>"
+                html += "</tr>"
+            html += "</tbody></table>"
+            st.markdown(html, unsafe_allow_html=True)
+        st.markdown(
+            f'<span class="metric-badge"><span class="label">Surveys </span><span class="value">{n_ds:,}</span></span>'
+            f'<span class="metric-badge"><span class="label">Percentiles </span><span class="value">{pct_range[0]}–{pct_range[1]}</span></span>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
+    else:
+        st.warning("No validated data for the selected filters.")
+
+    st.markdown('<div class="section-header">Observed vs Predicted</div>', unsafe_allow_html=True)
+    if len(diag_df) > 0:
+        MP  = 40_000
+        ev  = diag_df.sample(min(MP, len(diag_df)), random_state=42) if len(diag_df) > MP else diag_df
+        if len(diag_df) > MP: st.caption(f"Showing {MP:,} of {len(diag_df):,} points")
+        fig_s  = go.Figure()
+        mc_col = MODEL_COLOURS.get(selected_model, TERRACOTTA)
+        cn_a   = ev[COL["country_code"]].map(code_to_name).fillna(ev[COL["country_code"]])
+        ht = (
+            "<b>" + cn_a.astype(str) + "</b> (" + ev[COL["country_code"]].astype(str) + ")<br>"
+            + "Year: "       + ev[COL["prediction_year"]].astype(int).astype(str) + "<br>"
+            + "Percentile: " + ev[COL["percentile"]].astype(int).astype(str) + "<br>"
+            + "Predicted: "  + ev[COL["predicted_consumption"]].map("{:.3f}".format) + "<br>"
+            + "Observed: "   + ev[COL["observed_consumption"]].map("{:.3f}".format) + "<br>"
+            + "Error: "      + ev[COL["percentage_error"]].map("{:.1f}%".format)
+        ).tolist()
+        fig_s.add_trace(go.Scattergl(
+            x=ev[COL["observed_consumption"]], y=ev[COL["predicted_consumption"]],
+            mode="markers", marker=dict(size=3, color=mc_col, opacity=0.3),
+            name=selected_model, text=ht, hoverinfo="text",
+        ))
+        lo_s = ev[[COL["observed_consumption"], COL["predicted_consumption"]]].min().min()
+        hi_s = ev[[COL["observed_consumption"], COL["predicted_consumption"]]].max().max()
+        pad  = (hi_s - lo_s) * 0.02
+        fig_s.add_trace(go.Scatter(
+            x=[lo_s - pad, hi_s + pad], y=[lo_s - pad, hi_s + pad],
+            mode="lines", line=dict(color=ESPRESSO, width=2),
+            name="Perfect fit", hoverinfo="skip",
+        ))
+        fig_s.update_layout(
+            template="plotly_white", height=650,
+            xaxis_title="Observed (2017 PPP $/day)",
+            yaxis_title="Predicted (2017 PPP $/day)",
+            legend=dict(x=0.02, y=0.98),
+            margin=dict(l=60, r=20, t=30, b=60),
+        )
+        fig_s.update_xaxes(constrain="domain")
+        fig_s.update_yaxes(scaleanchor="x", scaleratio=1)
+        st.plotly_chart(fig_s, use_container_width=True)
+
+    st.markdown('<div class="section-header">Error by Percentile</div>', unsafe_allow_html=True)
+    if len(diag_df) > 0:
+        pr = []
+        for (mt, pt, p), g in diag_df.groupby(
+            [COL["model_type"], COL["prediction_type"], COL["percentile"]]
+        ):
+            r = g[COL["predicted_consumption"]].values - g[COL["observed_consumption"]].values
+            pr.append({
+                COL["model_type"]:      mt,
+                COL["prediction_type"]: pt,
+                COL["percentile"]:      p,
+                MC["rmse_cons"]:        np.sqrt(np.mean(r ** 2)),
+                MC["mae_cons"]:         np.mean(np.abs(r)),
+            })
+        pm = pd.DataFrame(pr)
+        if len(pm) > 0:
+            mo = {"RMSE": MC["rmse_cons"], "MAE": MC["mae_cons"]}
+            sl = st.selectbox("Metric", list(mo.keys()), index=0, key="dp_m")
+            fig_p = px.line(
+                pm, x=COL["percentile"], y=mo[sl],
+                color=COL["model_type"], line_dash=COL["prediction_type"],
+                color_discrete_map=MODEL_COLOURS,
+                labels={COL["percentile"]: "Percentile", mo[sl]: sl},
+                markers=True,
+            )
+            fig_p.update_traces(marker=dict(size=4))
+            fig_p.update_layout(
+                template="plotly_white", height=450,
+                legend=dict(orientation="h", y=-0.15),
+                margin=dict(l=50, r=20, t=30, b=60),
+            )
+            st.plotly_chart(fig_p, use_container_width=True)
+
+    st.markdown('<div class="section-header">RMSE by Year</div>', unsafe_allow_html=True)
+    if len(diag_df) > 0:
+        day = apply_sidebar(fact, force_validated=True)
+        yr  = []
+        for (mt, pt, y), g in day.groupby(
+            [COL["model_type"], COL["prediction_type"], COL["prediction_year"]]
+        ):
+            r  = g[COL["predicted_consumption"]].values - g[COL["observed_consumption"]].values
+            ns = g[[COL["country_code"], COL["prediction_year"]]].drop_duplicates().shape[0]
+            yr.append({
+                COL["model_type"]:      mt,
+                COL["prediction_type"]: pt,
+                COL["year"]:            int(y),
+                MC["rmse_cons"]:        np.sqrt(np.mean(r ** 2)),
+                "Surveys":              ns,
+            })
+        ym = pd.DataFrame(yr)
+        if len(ym) > 0:
+            yr_surveys  = ym.groupby(COL["year"])["Surveys"].max().to_dict()
+            all_yrs     = sorted(ym[COL["year"]].unique())
+            tick_labels = [f"({yr_surveys.get(y, 0)})<br>{y}" for y in all_yrs]
+            fig_y = go.Figure()
+            for (mt, pt) in ym[[COL["model_type"], COL["prediction_type"]]].drop_duplicates().values:
+                s  = ym[(ym[COL["model_type"]] == mt) & (ym[COL["prediction_type"]] == pt)].sort_values(COL["year"])
+                if len(s) == 0: continue
+                d  = "solid" if pt == "Nowcast" else "dash"
+                cl = MODEL_COLOURS.get(mt, TERRACOTTA)
+                hv = (
+                    "Year: " + s[COL["year"]].astype(str) + "<br>"
+                    "RMSE: " + s[MC["rmse_cons"]].map("{:.4f}".format) + "<br>"
+                    "Surveys: " + s["Surveys"].astype(str)
+                ).tolist()
+                fig_y.add_trace(go.Scatter(
+                    x=s[COL["year"]], y=s[MC["rmse_cons"]],
+                    mode="lines+markers",
+                    marker=dict(size=5, color=cl),
+                    line=dict(color=cl, dash=d),
+                    name=f"{mt} {pt}", text=hv, hoverinfo="text",
+                ))
+            fig_y.update_layout(
+                template="plotly_white", height=420,
+                xaxis=dict(
+                    title="(Surveys) Year",
+                    tickvals=all_yrs, ticktext=tick_labels,
+                    tickangle=0, dtick=1,
+                ),
+                yaxis_title="RMSE (Consumption)",
+                legend=dict(orientation="h", y=-0.22),
+                margin=dict(l=50, r=20, t=30, b=100),
+            )
+            st.plotly_chart(fig_y, use_container_width=True)
+
+    if len(diag_df) > 0 and COL["region"] in diag_df.columns:
+        st.markdown('<div class="section-header">Error by Region</div>', unsafe_allow_html=True)
+        rr = []
+        for (mt, pt, rg), g in diag_df.groupby(
+            [COL["model_type"], COL["prediction_type"], COL["region"]]
+        ):
+            r = g[COL["predicted_consumption"]].values - g[COL["observed_consumption"]].values
+            rr.append({
+                COL["model_type"]:      mt,
+                COL["prediction_type"]: pt,
+                COL["region"]:          rg,
+                MC["rmse_cons"]:        np.sqrt(np.mean(r ** 2)),
+            })
+        rm = pd.DataFrame(rr)
+        if len(rm) > 0:
+            fig_r = px.bar(
+                rm.sort_values(MC["rmse_cons"], ascending=True),
+                y=COL["region"], x=MC["rmse_cons"],
+                color=COL["model_type"], barmode="group",
+                color_discrete_map=MODEL_COLOURS, orientation="h",
+                labels={COL["region"]: "", MC["rmse_cons"]: "RMSE"},
+            )
+            fig_r.update_layout(
+                template="plotly_white", height=max(350, len(rm) * 18),
+                legend=dict(orientation="h", y=-0.12),
+                margin=dict(l=180, r=20, t=30, b=60),
+                yaxis=dict(autorange="reversed"),
+            )
+            st.plotly_chart(fig_r, use_container_width=True)
+
+
+# ============================================================
+# TAB 4 — MODEL EVALUATION
+# ============================================================
+with tab_model_perf:
+
+    ctrl_col1, ctrl_col2, ctrl_col3, _ = st.columns([1, 1, 1, 2])
+    with ctrl_col1:
+        eval_model = st.selectbox(
+            "Model", ["USE", "WASE"],
+            index=0 if selected_model == "USE" else 1,
+            key="eval_model",
+        )
+    with ctrl_col2:
+        eval_groupby = st.selectbox(
+            "Break down by",
+            ["Overall", "Region", "Income Group", "Sub-Region",
+             "Year", "Percentile", "Country",
+             "dt (USE only)", "Horizon (WASE only)"],
+            key="eval_groupby",
+        )
+    with ctrl_col3:
+        eval_metric = st.selectbox(
+            "Primary metric",
+            ["MAE (Log)", "RMSE (Log)", "Bias (Log)", "R² (Log)",
+             "MAPE %", "MAE (Consumption)", "RMSE (Consumption)"],
+            key="eval_metric",
+        )
+
+    metric_map = {
+        "MAE (Log)":          "mae_log",
+        "RMSE (Log)":         "rmse_log",
+        "Bias (Log)":         "bias_log",
+        "R² (Log)":           "r2_log",
+        "MAPE %":             "mape_pct",
+        "MAE (Consumption)":  "mae_cons",
+        "RMSE (Consumption)": "rmse_cons",
+    }
+    sel_metric_col = metric_map[eval_metric]
+
+    GROUPBY_COL_MAP_EVAL = {
         "Region":              "region",
         "Sub-Region":          "sub_region",
         "Income Group":        "income_group",
@@ -938,108 +1163,30 @@ with tab_performance:
         "Horizon (WASE only)": "horizon",
     }
 
-    ctrl_c1, ctrl_c2, _ = st.columns([1, 1, 3])
-    with ctrl_c1:
-        eval_groupby = st.selectbox(
-            "Break down by",
-            ["Overall", "Region", "Income Group", "Sub-Region",
-             "Year", "Percentile", "Country",
-             "dt (USE only)", "Horizon (WASE only)"],
-            key="eval_groupby",
-        )
+    eval_colour = USE_COLOUR if eval_model == "USE" else WASE_COLOUR
 
-    res_df  = load_diag_residuals(eval_model)
-    res_df  = filter_diag_residuals(res_df)
-    diag_df = apply_sidebar(fact, force_validated=True)
+    res_df = load_diag_residuals(eval_model)
+    res_df = filter_diag_residuals(res_df)
 
-    METRIC_OPTIONS = ["MAE (Log)", "RMSE (Log)", "Bias (Log)", "R² (Log)",
-                      "MAPE %", "MAE (Consumption)", "RMSE (Consumption)"]
-    METRIC_MAP = {
-        "MAE (Log)":          "mae_log",
-        "RMSE (Log)":         "rmse_log",
-        "Bias (Log)":         "bias_log",
-        "R² (Log)":           "r2_log",
-        "MAPE %":             "mape_pct",
-        "MAE (Consumption)":  "mae_cons",
-        "RMSE (Consumption)": "rmse_cons",
-    }
-
+    # ── A. Summary metrics ────────────────────────────────────────
     st.markdown(
-        f'<div class="section-header">{eval_model} — Performance Summary</div>',
+        f'<div class="section-header">{eval_model} — Summary Metrics</div>',
         unsafe_allow_html=True,
     )
-
-    _use_v  = apply_sidebar(fact, force_validated=True)
-    _use_v  = _use_v[_use_v[COL["model_type"]] == "USE"]
-    _wase_v = apply_sidebar(fact, force_validated=True)
-    _wase_v = _wase_v[_wase_v[COL["model_type"]] == "WASE"]
-
-    def _quick_metrics(df):
-        ev = df.dropna(subset=[COL["observed_consumption"], COL["predicted_consumption"]])
-        if len(ev) == 0:
-            return None
-        o = ev[COL["observed_consumption"]].values
-        p = ev[COL["predicted_consumption"]].values
-        r = p - o
-        with np.errstate(divide="ignore", invalid="ignore"):
-            ap = np.where(o > 0, np.abs(r / o), np.nan)
-        ol = ev[COL["observed_log_consumption"]].values if COL["observed_log_consumption"] in ev.columns else None
-        pl = ev[COL["predicted_log_consumption"]].values if COL["predicted_log_consumption"] in ev.columns else None
-        r2l = r2_from_cols(ol, pl) if (ol is not None and pl is not None) else np.nan
-        return {
-            "n":      len(ev),
-            "ctries": ev[COL["country_code"]].nunique(),
-            "r2":     r2_from_cols(o, p),
-            "r2_log": r2l,
-            "mae":    float(np.mean(np.abs(r))),
-            "mape":   float(np.nanmean(ap) * 100),
-        }
-
-    use_m  = _quick_metrics(_use_v)
-    wase_m = _quick_metrics(_wase_v)
-
-    if eval_model == "USE" and use_m:
-        prose = (
-            f"Across <strong>{use_m['n']:,} validated observations</strong> in "
-            f"<strong>{use_m['ctries']} countries</strong>, the USE model achieves "
-            f"R² = <strong>{use_m['r2']:.3f}</strong> on the consumption scale "
-            f"(R² = {use_m['r2_log']:.3f} in log space), "
-            f"MAE = <strong>${use_m['mae']:.2f}/day</strong>, "
-            f"and MAPE = <strong>{use_m['mape']:.1f}%</strong>. "
-            "These metrics reflect strictly out-of-sample LOCO performance — "
-            "the model never trained on the country it is evaluated against."
-        )
-    elif eval_model == "WASE" and wase_m:
-        prose = (
-            f"Across <strong>{wase_m['n']:,} validated observations</strong> in "
-            f"<strong>{wase_m['ctries']} countries</strong>, the WASE model achieves "
-            f"R² = <strong>{wase_m['r2']:.3f}</strong> on the consumption scale "
-            f"(R² = {wase_m['r2_log']:.3f} in log space), "
-            f"MAE = <strong>${wase_m['mae']:.2f}/day</strong>, "
-            f"and MAPE = <strong>{wase_m['mape']:.1f}%</strong>. "
-            "The substantially harder task of predicting without any survey anchor "
-            "explains the wider error margins relative to USE."
-        )
-    else:
-        prose = "No validated rows available for the current filter selection."
-
-    st.markdown(f'<div class="perf-summary">{prose}</div>', unsafe_allow_html=True)
-
     st.markdown(
-        f'<div class="section-sub">Model = {eval_model} · Prediction Type = {selected_pred} · '
+        f'<div class="section-sub">Prediction Type = {selected_pred} · '
         f'Percentiles {pct_range[0]}–{pct_range[1]}'
         + (f' · Country = {selected_name}' if selected_name != "All Countries" else '')
         + (f' · Region = {selected_region}' if selected_region != "All" else '')
-        + (f' · WFP Countries Only' if selected_wfp == "WFP Countries" else '')
         + '</div>',
         unsafe_allow_html=True,
     )
 
     if res_df is not None and len(res_df) > 0:
-        yr_col    = "target_year" if eval_model == "USE" else "focal_year"
-        badge_n   = len(res_df)
-        badge_iso = res_df["iso"].nunique() if "iso" in res_df.columns else "—"
-        badge_yrs = (
+        yr_col     = "target_year" if eval_model == "USE" else "focal_year"
+        badge_n    = len(res_df)
+        badge_iso  = res_df["iso"].nunique() if "iso" in res_df.columns else "—"
+        badge_yrs  = (
             f"{int(res_df[yr_col].min())}–{int(res_df[yr_col].max())}"
             if yr_col in res_df.columns else "—"
         )
@@ -1062,18 +1209,15 @@ with tab_performance:
                      "mae_cons", "rmse_cons", "mape_pct"],
                 ), unsafe_allow_html=True)
         else:
-            gcol = GROUPBY_COL_MAP.get(eval_groupby, "region")
+            gcol = GROUPBY_COL_MAP_EVAL.get(eval_groupby, "region")
             if gcol not in res_df.columns:
                 st.info(f"Column `{gcol}` not available for {eval_model}.")
             else:
-                tbl_metric = st.selectbox(
-                    "Sort table by", METRIC_OPTIONS, index=0, key="perf_tbl_metric"
-                )
-                tbl_metric_col = METRIC_MAP[tbl_metric]
                 grp_tbl = _compute_grouped(res_df, gcol)
                 if len(grp_tbl) > 0:
                     grp_tbl = grp_tbl.sort_values(
-                        tbl_metric_col, ascending=(tbl_metric_col != "r2_log"),
+                        sel_metric_col,
+                        ascending=(sel_metric_col != "r2_log"),
                     )
                     st.markdown(_metric_html_table(
                         grp_tbl, gcol,
@@ -1086,64 +1230,18 @@ with tab_performance:
             f"Run `conphi_v1_{eval_model.lower()}_diagnostics.py` first."
         )
 
+    # ── B. Metric chart ───────────────────────────────────────────
     st.markdown(
-        f'<div class="section-header">{eval_model} — Observed vs Predicted</div>',
+        f'<div class="section-header">{eval_model} — {eval_metric} by {eval_groupby}</div>',
         unsafe_allow_html=True,
     )
-    if len(diag_df) > 0:
-        MP  = 40_000
-        ev  = diag_df[diag_df[COL["model_type"]] == eval_model]
-        ev  = ev.sample(min(MP, len(ev)), random_state=42) if len(ev) > MP else ev
-        if len(ev) > MP: st.caption(f"Showing {MP:,} of {len(ev):,} points")
-        fig_s  = go.Figure()
-        cn_a   = ev[COL["country_code"]].map(code_to_name).fillna(ev[COL["country_code"]])
-        ht = (
-            "<b>" + cn_a.astype(str) + "</b><br>"
-            + "Year: "       + ev[COL["prediction_year"]].astype(int).astype(str) + "<br>"
-            + "Percentile: " + ev[COL["percentile"]].astype(int).astype(str) + "<br>"
-            + "Predicted: "  + ev[COL["predicted_consumption"]].map("{:.3f}".format) + "<br>"
-            + "Observed: "   + ev[COL["observed_consumption"]].map("{:.3f}".format) + "<br>"
-            + "Error: "      + ev[COL["percentage_error"]].map("{:.1f}%".format)
-        ).tolist()
-        fig_s.add_trace(go.Scattergl(
-            x=ev[COL["observed_consumption"]], y=ev[COL["predicted_consumption"]],
-            mode="markers", marker=dict(size=3, color=eval_colour, opacity=0.3),
-            name=eval_model, text=ht, hoverinfo="text",
-        ))
-        lo_s = ev[[COL["observed_consumption"], COL["predicted_consumption"]]].min().min()
-        hi_s = ev[[COL["observed_consumption"], COL["predicted_consumption"]]].max().max()
-        pad  = (hi_s - lo_s) * 0.02
-        fig_s.add_trace(go.Scatter(
-            x=[lo_s - pad, hi_s + pad], y=[lo_s - pad, hi_s + pad],
-            mode="lines", line=dict(color=ESPRESSO, width=2),
-            name="Perfect fit", hoverinfo="skip",
-        ))
-        fig_s.update_layout(
-            template="plotly_white", height=600,
-            xaxis_title="Observed (2017 PPP $/day)",
-            yaxis_title="Predicted (2017 PPP $/day)",
-            legend=dict(x=0.02, y=0.98),
-            margin=dict(l=60, r=20, t=30, b=60),
-        )
-        fig_s.update_xaxes(constrain="domain")
-        fig_s.update_yaxes(scaleanchor="x", scaleratio=1)
-        st.plotly_chart(fig_s, use_container_width=True)
-
     if res_df is not None and len(res_df) > 0 and eval_groupby != "Overall":
-        st.markdown(
-            f'<div class="section-header">{eval_model} — Metric by {eval_groupby}</div>',
-            unsafe_allow_html=True,
-        )
-        gcol = GROUPBY_COL_MAP.get(eval_groupby, "region")
+        gcol = GROUPBY_COL_MAP_EVAL.get(eval_groupby, "region")
         if gcol in res_df.columns:
-            chart_metric = st.selectbox(
-                "Metric", METRIC_OPTIONS, index=0, key="perf_chart_metric"
-            )
-            chart_metric_col = METRIC_MAP[chart_metric]
             grp_tbl = _compute_grouped(res_df, gcol)
-            if len(grp_tbl) > 0 and chart_metric_col in grp_tbl.columns:
+            if len(grp_tbl) > 0 and sel_metric_col in grp_tbl.columns:
                 grp_tbl     = grp_tbl.sort_values(
-                    chart_metric_col, ascending=(chart_metric_col != "r2_log")
+                    sel_metric_col, ascending=(sel_metric_col != "r2_log")
                 )
                 is_temporal = eval_groupby in (
                     "Year", "dt (USE only)", "Horizon (WASE only)", "Percentile"
@@ -1151,17 +1249,17 @@ with tab_performance:
                 fig_bar = go.Figure()
                 if is_temporal:
                     fig_bar.add_trace(go.Scatter(
-                        x=grp_tbl[gcol], y=grp_tbl[chart_metric_col],
+                        x=grp_tbl[gcol], y=grp_tbl[sel_metric_col],
                         mode="lines+markers",
                         line=dict(color=eval_colour, width=2.5),
                         marker=dict(size=7, color=eval_colour),
                         customdata=grp_tbl[["n_obs"]].values,
                         hovertemplate=(
-                            f"{gcol}: %{{x}}<br>{chart_metric}: "
+                            f"{gcol}: %{{x}}<br>{eval_metric}: "
                             f"%{{y:.4f}}<br>n obs: %{{customdata[0]:,}}<extra></extra>"
                         ),
                     ))
-                    if chart_metric_col == "bias_log":
+                    if sel_metric_col == "bias_log":
                         fig_bar.add_hline(y=0, line=dict(dash="dash", color="grey", width=1))
                 else:
                     if eval_groupby == "Region":
@@ -1171,20 +1269,20 @@ with tab_performance:
                     else:
                         bar_colours = eval_colour
                     fig_bar.add_trace(go.Bar(
-                        x=grp_tbl[chart_metric_col], y=grp_tbl[gcol],
+                        x=grp_tbl[sel_metric_col], y=grp_tbl[gcol],
                         orientation="h", marker_color=bar_colours,
                         customdata=grp_tbl[["n_obs"]].values,
                         hovertemplate=(
-                            f"%{{y}}<br>{chart_metric}: "
+                            f"%{{y}}<br>{eval_metric}: "
                             f"%{{x:.4f}}<br>n obs: %{{customdata[0]:,}}<extra></extra>"
                         ),
                     ))
-                    if chart_metric_col == "bias_log":
+                    if sel_metric_col == "bias_log":
                         fig_bar.add_vline(x=0, line=dict(dash="dash", color="grey", width=1))
                 h = max(400, len(grp_tbl) * 28) if not is_temporal else 420
                 fig_bar.update_layout(
                     template="plotly_white", height=h,
-                    xaxis_title=chart_metric if is_temporal else "",
+                    xaxis_title=eval_metric if is_temporal else "",
                     margin=dict(l=180 if not is_temporal else 60, r=20, t=30, b=60),
                     showlegend=False,
                 )
@@ -1192,121 +1290,14 @@ with tab_performance:
                     fig_bar.update_layout(yaxis=dict(autorange="reversed"))
                 st.plotly_chart(fig_bar, use_container_width=True)
 
-    st.markdown(
-        f'<div class="section-header">{eval_model} — Error by Percentile</div>',
-        unsafe_allow_html=True,
-    )
-    _perf_df = diag_df[diag_df[COL["model_type"]] == eval_model]
-    if len(_perf_df) > 0:
-        pr = []
-        for (pt, p), g in _perf_df.groupby([COL["prediction_type"], COL["percentile"]]):
-            obs_vals  = g[COL["observed_consumption"]].values
-            pred_vals = g[COL["predicted_consumption"]].values
-            r = pred_vals - obs_vals
-            with np.errstate(divide="ignore", invalid="ignore"):
-                ape = np.where(obs_vals > 0, np.abs(r / obs_vals), np.nan)
-            ol = g[COL["observed_log_consumption"]].values if COL["observed_log_consumption"] in g.columns else np.array([])
-            pl = g[COL["predicted_log_consumption"]].values if COL["predicted_log_consumption"] in g.columns else np.array([])
-            rl = pl - ol if len(ol) > 0 and len(pl) > 0 else np.array([])
-            pr.append({
-                COL["prediction_type"]: pt,
-                COL["percentile"]:      p,
-                "mae_log":              float(np.mean(np.abs(rl))) if len(rl) > 0 else np.nan,
-                "rmse_log":             float(np.sqrt(np.mean(rl ** 2))) if len(rl) > 0 else np.nan,
-                "bias_log":             float(rl.mean()) if len(rl) > 0 else np.nan,
-                "r2_log":               float(1 - np.sum(rl**2) / np.sum((ol - ol.mean())**2)) if len(rl) > 1 and np.sum((ol - ol.mean())**2) > 1e-8 else np.nan,
-                "mape_pct":             float(np.nanmean(ape) * 100),
-                "mae_cons":             float(np.mean(np.abs(r))),
-                "rmse_cons":            float(np.sqrt(np.mean(r ** 2))),
-            })
-        pm = pd.DataFrame(pr)
-        if len(pm) > 0:
-            pct_metric = st.selectbox("Metric", METRIC_OPTIONS, index=0, key="dp_m")
-            pct_metric_col = METRIC_MAP[pct_metric]
-            fig_p = px.line(
-                pm, x=COL["percentile"], y=pct_metric_col,
-                color=COL["prediction_type"],
-                labels={COL["percentile"]: "Percentile", pct_metric_col: pct_metric},
-                markers=True,
-                color_discrete_sequence=[eval_colour, SLATE_BLUE],
-            )
-            fig_p.update_traces(marker=dict(size=4))
-            fig_p.update_layout(
-                template="plotly_white", height=420,
-                legend=dict(orientation="h", y=-0.15),
-                margin=dict(l=50, r=20, t=30, b=60),
-            )
-            st.plotly_chart(fig_p, use_container_width=True)
-
-    st.markdown(
-        f'<div class="section-header">{eval_model} — Performance by Year</div>',
-        unsafe_allow_html=True,
-    )
-    _all_val = apply_sidebar(fact, force_validated=True)
-    _all_val = _all_val[_all_val[COL["model_type"]] == eval_model]
-    if len(_all_val) > 0:
-        yr_metric = st.selectbox(
-            "Metric", METRIC_OPTIONS, index=1, key="yr_metric"
-        )
-        yr_metric_col = METRIC_MAP[yr_metric]
-        yr = []
-        for (pt, y), g in _all_val.groupby([COL["prediction_type"], COL["prediction_year"]]):
-            r  = g[COL["predicted_consumption"]].values - g[COL["observed_consumption"]].values
-            rl = g[COL["predicted_log_consumption"]].values - g[COL["observed_log_consumption"]].values if COL["predicted_log_consumption"] in g.columns and COL["observed_log_consumption"] in g.columns else np.array([])
-            ns = g[[COL["country_code"], COL["prediction_year"]]].drop_duplicates().shape[0]
-            with np.errstate(divide="ignore", invalid="ignore"):
-                ov  = g[COL["observed_consumption"]].values
-                ape = np.where(ov > 0, np.abs(r / ov), np.nan)
-            row = {
-                COL["prediction_type"]: pt,
-                COL["year"]:            int(y),
-                "mae_log":   float(np.mean(np.abs(rl))) if len(rl) > 0 else np.nan,
-                "rmse_log":  float(np.sqrt(np.mean(rl ** 2))) if len(rl) > 0 else np.nan,
-                "bias_log":  float(rl.mean()) if len(rl) > 0 else np.nan,
-                "r2_log":    float(1 - np.sum(rl**2) / np.sum((g[COL["observed_log_consumption"]].values - g[COL["observed_log_consumption"]].values.mean())**2)) if len(rl) > 1 and np.sum((g[COL["observed_log_consumption"]].values - g[COL["observed_log_consumption"]].values.mean())**2) > 1e-8 else np.nan,
-                "mae_cons":  float(np.mean(np.abs(r))),
-                "rmse_cons": float(np.sqrt(np.mean(r ** 2))),
-                "mape_pct":  float(np.nanmean(ape) * 100),
-                "Surveys":   ns,
-            }
-            yr.append(row)
-        ym = pd.DataFrame(yr)
-        if len(ym) > 0 and yr_metric_col in ym.columns:
-            yr_surveys  = ym.groupby(COL["year"])["Surveys"].max().to_dict()
-            all_yrs     = sorted(ym[COL["year"]].unique())
-            tick_labels = [f"({yr_surveys.get(y, 0)})<br>{y}" for y in all_yrs]
-            fig_y = go.Figure()
-            for pt, grp_y in ym.groupby(COL["prediction_type"]):
-                grp_y = grp_y.sort_values(COL["year"])
-                fig_y.add_trace(go.Scatter(
-                    x=grp_y[COL["year"]], y=grp_y[yr_metric_col],
-                    mode="lines+markers",
-                    marker=dict(size=5, color=eval_colour),
-                    line=dict(color=eval_colour, dash="solid" if pt == "Nowcast" else "dash"),
-                    name=f"{eval_model} {pt}",
-                ))
-            if yr_metric_col == "bias_log":
-                fig_y.add_hline(y=0, line=dict(dash="dash", color="grey", width=1))
-            fig_y.update_layout(
-                template="plotly_white", height=400,
-                xaxis=dict(
-                    title="(Surveys) Year",
-                    tickvals=all_yrs, ticktext=tick_labels,
-                    tickangle=0, dtick=1,
-                ),
-                yaxis_title=yr_metric,
-                legend=dict(orientation="h", y=-0.22),
-                margin=dict(l=50, r=20, t=30, b=100),
-            )
-            st.plotly_chart(fig_y, use_container_width=True)
-
+    # ── C. Residual violins ───────────────────────────────────────
     st.markdown(
         f'<div class="section-header">{eval_model} — Residual Distribution by Region</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="section-sub">Log residuals (predicted − observed) on validated rows. '
-        'Red dashed line = zero bias.</div>',
+        '<div class="section-sub">Log residuals (predicted − observed) on validated rows, '
+        'split by World Bank region. Red dashed line = zero bias.</div>',
         unsafe_allow_html=True,
     )
     if res_df is not None and len(res_df) > 0 and "resid_log" in res_df.columns:
@@ -1329,15 +1320,19 @@ with tab_performance:
                 margin=dict(l=60, r=20, t=30, b=80),
             )
             st.plotly_chart(fig_vio, use_container_width=True)
+        else:
+            st.info("Region column not found in residuals data.")
 
+    # ── D. Coverage calibration ───────────────────────────────────
     st.markdown(
         f'<div class="section-header">{eval_model} — Coverage Calibration</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
         '<div class="section-sub">Empirical vs nominal coverage, rescaled from the 90% band. '
-        'Points above the diagonal = over-coverage; below = under-coverage.'
-        + (' Post-hoc CI shrinkage (factor 0.55) applied.' if eval_model == "WASE" else '')
+        'Points above the diagonal = over-coverage (bands too wide); '
+        'below = under-coverage (bands too narrow).'
+        + (' WASE coverage reflects post-hoc CI shrinkage (factor 0.55).' if eval_model == "WASE" else '')
         + '</div>',
         unsafe_allow_html=True,
     )
@@ -1374,8 +1369,14 @@ with tab_performance:
     else:
         st.info(f"Coverage data not found. Run `conphi_v1_{eval_model.lower()}_diagnostics.py` first.")
 
+    # ── E. Country-level MAE ──────────────────────────────────────
     st.markdown(
-        f'<div class="section-header">{eval_model} — Country-Level Error</div>',
+        f'<div class="section-header">{eval_model} — Country-Level MAE</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="section-sub">Mean absolute log-consumption error by country on validated rows. '
+        'Colour encodes World Bank region.</div>',
         unsafe_allow_html=True,
     )
     cntry_df = load_diag_country_mae(eval_model)
@@ -1384,44 +1385,33 @@ with tab_performance:
             cntry_df = cntry_df[cntry_df["region"] == selected_region]
         if selected_name != "All Countries" and "country_name" in cntry_df.columns:
             cntry_df = cntry_df[cntry_df["country_name"] == selected_name]
-        if selected_wfp == "WFP Countries" and "iso" in cntry_df.columns:
-            cntry_df = cntry_df[cntry_df["iso"].isin(wfp_isos)]
 
-        cntry_metric = st.selectbox(
-            "Metric", ["MAE (Log)", "Bias (Log)", "RMSE (Log)", "MAE (Consumption)", "RMSE (Consumption)"],
-            index=0, key="cntry_metric"
-        )
-        cntry_metric_col = METRIC_MAP.get(cntry_metric, "mae_log")
-
-        n_top   = st.slider(
-            "Show top N countries", min_value=10,
-            max_value=min(80, max(10, len(cntry_df))),
+        n_top    = st.slider(
+            "Show top N countries",
+            min_value=10, max_value=min(80, max(10, len(cntry_df))),
             value=min(40, len(cntry_df)), step=5, key="eval_top_n",
         )
-        sort_asc    = cntry_metric_col == "r2_log"
-        show_df     = cntry_df.sort_values(cntry_metric_col if cntry_metric_col in cntry_df.columns else "mae_log",
-                                           ascending=sort_asc).head(n_top)
-        bar_colours = [eval_colour] * len(show_df)
-        x_vals      = show_df[cntry_metric_col].values if cntry_metric_col in show_df.columns else show_df["mae_log"].values
-        fig_cntry   = go.Figure(go.Bar(
-            x=x_vals, y=show_df["country_name"],
+        show_df      = cntry_df.sort_values("mae_log", ascending=False).head(n_top)
+        bar_colours  = [WB_PALETTE.get(r, eval_colour) for r in show_df["region"].fillna("Unknown")]
+        fig_cntry = go.Figure(go.Bar(
+            x=show_df["mae_log"], y=show_df["country_name"],
             orientation="h", marker_color=bar_colours,
             customdata=np.stack([
                 show_df["n_obs"].values,
                 show_df["region"].fillna("Unknown").values,
                 (show_df["income_group"].fillna("Unknown").values
                  if "income_group" in show_df.columns else ["—"] * len(show_df)),
-                show_df["bias_log"].round(4).values if "bias_log" in show_df.columns else np.zeros(len(show_df)),
+                show_df["bias_log"].round(4).values,
             ], axis=1),
             hovertemplate=(
-                f"<b>%{{y}}</b><br>{cntry_metric}: %{{x:.4f}}<br>Bias (log): %{{customdata[3]}}<br>"
+                "<b>%{y}</b><br>MAE (log): %{x:.4f}<br>Bias (log): %{customdata[3]}<br>"
                 "n obs: %{customdata[0]}<br>Region: %{customdata[1]}<br>"
                 "Income: %{customdata[2]}<extra></extra>"
             ),
         ))
         fig_cntry.update_layout(
             template="plotly_white", height=max(500, n_top * 22),
-            xaxis_title=cntry_metric,
+            xaxis_title="MAE (Log Consumption)",
             yaxis=dict(autorange="reversed"),
             margin=dict(l=180, r=20, t=30, b=60),
         )
@@ -1429,66 +1419,77 @@ with tab_performance:
     else:
         st.info(f"Country MAE data not found. Run `conphi_v1_{eval_model.lower()}_diagnostics.py` first.")
 
+    # ── F. Model-specific temporal panels ─────────────────────────
+
+    # USE — dt breakdown
     if eval_model == "USE" and res_df is not None and len(res_df) > 0 and "dt" in res_df.columns:
         st.markdown(
             '<div class="section-header">USE — Performance by dt (Years Since Survey)</div>',
             unsafe_allow_html=True,
         )
-        dt_metric     = st.selectbox("Metric", METRIC_OPTIONS, index=0, key="dt_metric")
-        dt_metric_col = METRIC_MAP[dt_metric]
-        dt_grp        = _compute_grouped(res_df, "dt")
-        if len(dt_grp) > 0 and dt_metric_col in dt_grp.columns:
+        st.markdown(
+            '<div class="section-sub">How prediction accuracy degrades as the survey anchor ages. '
+            'Widening errors at larger dt confirm expected uncertainty accumulation.</div>',
+            unsafe_allow_html=True,
+        )
+        dt_grp = _compute_grouped(res_df, "dt")
+        if len(dt_grp) > 0 and sel_metric_col in dt_grp.columns:
             dt_grp = dt_grp.sort_values("dt")
             fig_dt = go.Figure()
             fig_dt.add_trace(go.Scatter(
-                x=dt_grp["dt"], y=dt_grp[dt_metric_col],
+                x=dt_grp["dt"], y=dt_grp[sel_metric_col],
                 mode="lines+markers",
                 line=dict(color=USE_COLOUR, width=2.5), marker=dict(size=8),
                 customdata=dt_grp[["n_obs"]].values,
                 hovertemplate=(
-                    "dt=%{x}<br>" + dt_metric +
+                    "dt=%{x}<br>" + eval_metric +
                     ": %{y:.4f}<br>n=%{customdata[0]:,}<extra></extra>"
                 ),
             ))
-            if dt_metric_col == "bias_log":
+            if sel_metric_col == "bias_log":
                 fig_dt.add_hline(y=0, line=dict(dash="dash", color="grey", width=1))
             fig_dt.update_layout(
                 template="plotly_white", height=380,
-                xaxis_title="Years Since Survey (dt)", yaxis_title=dt_metric,
+                xaxis_title="Years Since Survey (dt)", yaxis_title=eval_metric,
                 margin=dict(l=60, r=20, t=30, b=60),
             )
             st.plotly_chart(fig_dt, use_container_width=True)
 
+    # WASE — horizon breakdown
     if eval_model == "WASE" and res_df is not None and len(res_df) > 0 and "horizon" in res_df.columns:
         st.markdown(
             '<div class="section-header">WASE — Performance by Forecast Horizon</div>',
             unsafe_allow_html=True,
         )
-        hor_metric     = st.selectbox("Metric", METRIC_OPTIONS, index=0, key="hor_metric")
-        hor_metric_col = METRIC_MAP[hor_metric]
-        h_grp          = _compute_grouped(res_df, "horizon")
-        if len(h_grp) > 0 and hor_metric_col in h_grp.columns:
+        st.markdown(
+            '<div class="section-sub">WASE uses structural indicators only, so performance '
+            'should degrade less steeply with horizon than USE.</div>',
+            unsafe_allow_html=True,
+        )
+        h_grp = _compute_grouped(res_df, "horizon")
+        if len(h_grp) > 0 and sel_metric_col in h_grp.columns:
             h_grp = h_grp.sort_values("horizon")
             fig_hor = go.Figure()
             fig_hor.add_trace(go.Scatter(
-                x=h_grp["horizon"], y=h_grp[hor_metric_col],
+                x=h_grp["horizon"], y=h_grp[sel_metric_col],
                 mode="lines+markers",
                 line=dict(color=WASE_COLOUR, width=2.5), marker=dict(size=8),
                 customdata=h_grp[["n_obs"]].values,
                 hovertemplate=(
-                    "Horizon=%{x}<br>" + hor_metric +
+                    "Horizon=%{x}<br>" + eval_metric +
                     ": %{y:.4f}<br>n=%{customdata[0]:,}<extra></extra>"
                 ),
             ))
-            if hor_metric_col == "bias_log":
+            if sel_metric_col == "bias_log":
                 fig_hor.add_hline(y=0, line=dict(dash="dash", color="grey", width=1))
             fig_hor.update_layout(
                 template="plotly_white", height=380,
-                xaxis_title="Forecast Horizon (0 = Nowcast)", yaxis_title=hor_metric,
+                xaxis_title="Forecast Horizon (0 = Nowcast)", yaxis_title=eval_metric,
                 margin=dict(l=60, r=20, t=30, b=60),
             )
             st.plotly_chart(fig_hor, use_container_width=True)
 
+    # ── G. Raw residuals expander ──────────────────────────────────
     with st.expander(f"View {eval_model} residuals data"):
         if res_df is not None and len(res_df) > 0:
             yr_col    = "target_year" if eval_model == "USE" else "focal_year"
@@ -1505,15 +1506,26 @@ with tab_performance:
         else:
             st.info("No residuals data loaded.")
 
+
 # ============================================================
-# TAB 6 — PREDICTOR ANALYSIS
+# TAB 5 — PREDICTOR ANALYSIS
 # ============================================================
 with tab_predictors:
 
-    pred_model      = selected_model
-    pred_pred_type  = selected_pred
-    pred_colour     = USE_COLOUR if pred_model == "USE" else WASE_COLOUR
-    pmap            = PARAM_MAP_USE if pred_model == "USE" else PARAM_MAP_WASE
+    pred_ctrl1, pred_ctrl2, _ = st.columns([1, 1, 3])
+    with pred_ctrl1:
+        pred_model = st.selectbox(
+            "Model", ["USE", "WASE"],
+            index=0 if selected_model == "USE" else 1,
+            key="pred_model",
+        )
+    with pred_ctrl2:
+        pred_pred_type = st.selectbox(
+            "Prediction type", all_pred_types, index=0, key="pred_pred_type"
+        )
+
+    pred_colour = USE_COLOUR if pred_model == "USE" else WASE_COLOUR
+    pmap        = PARAM_MAP_USE if pred_model == "USE" else PARAM_MAP_WASE
 
     raw_params = load_diag_params(pred_model)
     params_df  = _prep_params(raw_params, pred_model)
@@ -1525,136 +1537,39 @@ with tab_predictors:
         )
     else:
         if "pred_type" in params_df.columns:
-            available_pred_types = params_df["pred_type"].unique().tolist()
-            if pred_pred_type in available_pred_types:
-                params_df = params_df[params_df["pred_type"] == pred_pred_type].copy()
-            else:
-                fallback = available_pred_types[0]
-                params_df = params_df[params_df["pred_type"] == fallback].copy()
-                st.caption(
-                    f"Prediction type '{pred_pred_type}' not available for {pred_model} "
-                    f"parameters — showing '{fallback}' instead."
-                )
+            params_df = params_df[params_df["pred_type"] == pred_pred_type].copy()
 
         if len(params_df) == 0:
-            st.info("No parameter rows available for the current selection.")
+            st.info(f"No rows for pred_type = {pred_pred_type}.")
         else:
             yr_col = "target_year" if pred_model == "USE" else "focal_year"
 
-            st.markdown(
-                f'<div class="section-header">{pred_model} — Predictor Summary</div>',
-                unsafe_allow_html=True,
-            )
-
-            if pred_model == "USE":
-                pos_rows = params_df[params_df["param"] == "beta0_pos"]
-                neg_rows = params_df[params_df["param"] == "beta0_neg"]
-                if len(pos_rows) > 0 and len(neg_rows) > 0:
-                    b_pos = float(pos_rows["mean"].mean())
-                    b_neg = float(neg_rows["mean"].mean())
-                    prose = (
-                        f"Across rolling target years, the average expansion passthrough is "
-                        f"<strong>β⁺ = {b_pos:.3f}</strong> and contraction passthrough is "
-                        f"<strong>β⁻ = {b_neg:.3f}</strong>. "
-                        f"{'Contraction passthrough exceeds expansion passthrough' if abs(b_neg) > abs(b_pos) else 'Expansion and contraction passthrough are broadly similar'}, "
-                        f"consistent with the asymmetric transmission of GDP shocks to household consumption. "
-                        f"Neither coefficient reaches full passthrough (β = 1), indicating that households "
-                        f"do not absorb the full magnitude of GDP fluctuations in either direction."
-                    )
-                else:
-                    prose = "Parameter trajectories are shown below."
-
-            else:
-                if "sd" in params_df.columns and len(params_df) > 0:
-                    snr = (
-                        params_df.groupby("param")
-                        .apply(lambda g: (np.abs(g["mean"]) / g["sd"].replace(0, np.nan)).mean())
-                        .dropna()
-                        .sort_values(ascending=False)
-                    )
-                    if len(snr) > 0:
-                        top3       = snr.head(3)
-                        top_labels = [pmap.get(p, p) for p in top3.index]
-                        top_snrs   = top3.values
-                        low_params = snr[snr < 1].index.tolist()
-                        low_labels = [pmap.get(p, p) for p in low_params]
-
-                        mean_by_param = params_df.groupby("param")["mean"].mean()
-                        gdp_el    = mean_by_param.get("gdp_elasticity", None)
-                        ineq      = mean_by_param.get("baseline_inequality", None)
-                        u5        = mean_by_param.get("u5_mortality_effect", None)
-                        rural     = mean_by_param.get("rural_share_effect", None)
-                        gov_rev   = mean_by_param.get("gov_rev_effect", None)
-                        res_rents = mean_by_param.get("res_rents_effect", None)
-
-                        prose = (
-                            f"The WASE model predicts consumption distributions from structural "
-                            f"country indicators. The strongest predictors by signal-to-noise ratio are: "
-                            f"<strong>{top_labels[0]}</strong> (SNR = {top_snrs[0]:.1f})"
-                        )
-                        if len(top_labels) > 1:
-                            prose += f", <strong>{top_labels[1]}</strong> (SNR = {top_snrs[1]:.1f})"
-                        if len(top_labels) > 2:
-                            prose += f", and <strong>{top_labels[2]}</strong> (SNR = {top_snrs[2]:.1f})"
-                        prose += ". "
-
-                        if gdp_el is not None:
-                            prose += (
-                                f"GDP per capita elasticity averages <strong>{gdp_el:.3f}</strong>, "
-                                f"meaning a 1% increase in GDP per capita is associated with approximately "
-                                f"a {gdp_el * 100:.1f}% increase in log-consumption at the distribution centre. "
-                            )
-                        if ineq is not None:
-                            prose += (
-                                f"The baseline inequality parameter (log-logistic shape) averages "
-                                f"<strong>{ineq:.3f}</strong> — higher values indicate a more compressed "
-                                f"distribution with lower inequality. "
-                            )
-                        if u5 is not None:
-                            direction = "negative" if u5 < 0 else "positive"
-                            prose += (
-                                f"Under-5 mortality has a {direction} association with consumption "
-                                f"(coefficient = {u5:.4f}), consistent with its role as a proxy for "
-                                f"broader deprivation. "
-                            )
-                        if gov_rev is not None or res_rents is not None:
-                            prose += "Fiscal variables (government revenue"
-                            if res_rents is not None:
-                                prose += f", resource rents [{res_rents:.4f}]"
-                            prose += ") contribute modest additional signal beyond GDP. "
-                        if low_labels:
-                            prose += (
-                                f"Parameters with SNR below 1 — where the posterior is barely "
-                                f"distinguishable from the prior — include "
-                                f"{', '.join(f'<em>{l}</em>' for l in low_labels[:5])}. "
-                                f"These predictors have little empirical support in the current "
-                                f"training data and could be candidates for removal or tighter priors "
-                                f"in future model iterations."
-                            )
-                    else:
-                        prose = "Predictor importance is shown below."
-                else:
-                    prose = "Predictor importance is shown below."
-
-            st.markdown(f'<div class="perf-summary">{prose}</div>', unsafe_allow_html=True)
-
-            with st.expander("📋 Parameter data diagnostics"):
+            with st.expander("📋 Parameter data diagnostics (click to inspect)"):
                 st.write("**Columns:**", list(params_df.columns))
                 st.write("**Unique params:**", sorted(params_df["param"].unique().tolist()))
                 st.write("**Rows:**", len(params_df))
                 st.dataframe(params_df.head(20), use_container_width=True)
 
+            # ── USE: passthrough trajectories ──────────────────────
             if pred_model == "USE":
-                avail_params = params_df["param"].unique()
-
                 st.markdown(
                     '<div class="section-header">USE — Asymmetric GDP Passthrough Over Time</div>',
                     unsafe_allow_html=True,
                 )
-                colour_map = {"beta0_pos": "#2ca02c", "beta0_neg": "#d62728"}
-                label_map  = {k: PARAM_MAP_USE.get(k, k) for k in colour_map}
-                fig_par    = go.Figure()
-                plotted    = False
+                st.markdown(
+                    '<div class="section-sub">β⁺ (expansion) and β⁻ (contraction) passthrough '
+                    'coefficients across rolling target years, with 90% HDI bands. '
+                    'Contraction passthrough is consistently larger, confirming asymmetric '
+                    'GDP transmission to household consumption.</div>',
+                    unsafe_allow_html=True,
+                )
+
+                colour_map   = {"beta0_pos": "#2ca02c", "beta0_neg": "#d62728"}
+                label_map    = {k: PARAM_MAP_USE.get(k, k) for k in colour_map}
+                avail_params = params_df["param"].unique()
+
+                fig_par = go.Figure()
+                plotted = False
                 for param, c in colour_map.items():
                     if param not in avail_params: continue
                     sub = params_df[params_df["param"] == param].sort_values(yr_col)
@@ -1677,6 +1592,7 @@ with tab_predictors:
                             "Year: %{x}<br>Mean: %{y:.4f}<extra></extra>"
                         ),
                     ))
+
                 if plotted:
                     fig_par.add_hline(
                         y=1.0, line=dict(dash="dash", color="grey", width=1.2),
@@ -1690,87 +1606,13 @@ with tab_predictors:
                         margin=dict(l=60, r=20, t=30, b=80),
                     )
                     st.plotly_chart(fig_par, use_container_width=True)
-
-                st.markdown(
-                    '<div class="section-header">USE — Effective Passthrough Across Percentiles</div>',
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    '<div class="section-sub">'
-                    'Effective passthrough at each percentile: β_eff(p) = β₀ ± β_p · bell(p), '
-                    'where bell(p) = 4·p·(1−p). Shaded band shows 90% CI envelope averaged '
-                    'across all available target years.'
-                    '</div>',
-                    unsafe_allow_html=True,
-                )
-                pct_grid = np.linspace(0.01, 0.99, 99)
-                bell     = 4 * pct_grid * (1 - pct_grid)
-
-                has_spline_params = any(
-                    p in avail_params for p in ["beta0_pos", "beta0_neg", "beta_p_pos", "beta_p_neg"]
-                )
-                if has_spline_params:
-                    fig_spline = go.Figure()
-                    spline_cases = [
-                        ("beta0_pos", "beta_p_pos", "#2ca02c", "Expansion (β⁺ + β_p⁺·bell(p))"),
-                        ("beta0_neg", "beta_p_neg", "#d62728", "Contraction (β⁻ + β_p⁻·bell(p))"),
-                    ]
-                    for b0_param, bp_param, c, label in spline_cases:
-                        if b0_param not in avail_params:
-                            continue
-                        b0_rows = params_df[params_df["param"] == b0_param]
-                        bp_rows = params_df[params_df["param"] == bp_param] if bp_param in avail_params else pd.DataFrame()
-
-                        b0_mean = float(b0_rows["mean"].mean()) if len(b0_rows) > 0 else 0.0
-                        b0_q05  = float(b0_rows["q05"].mean())  if "q05" in b0_rows.columns and len(b0_rows) > 0 else b0_mean
-                        b0_q95  = float(b0_rows["q95"].mean())  if "q95" in b0_rows.columns and len(b0_rows) > 0 else b0_mean
-
-                        bp_mean = float(bp_rows["mean"].mean()) if len(bp_rows) > 0 else 0.0
-                        bp_q05  = float(bp_rows["q05"].mean())  if "q05" in bp_rows.columns and len(bp_rows) > 0 else bp_mean
-                        bp_q95  = float(bp_rows["q95"].mean())  if "q95" in bp_rows.columns and len(bp_rows) > 0 else bp_mean
-
-                        eff_mean = b0_mean + bp_mean * bell
-                        eff_lo   = b0_q05  + bp_q05  * bell
-                        eff_hi   = b0_q95  + bp_q95  * bell
-
-                        fig_spline.add_trace(go.Scatter(
-                            x=np.concatenate([pct_grid * 100, pct_grid[::-1] * 100]),
-                            y=np.concatenate([eff_hi, eff_lo[::-1]]),
-                            fill="toself", fillcolor=hex_to_rgba(c, 0.15),
-                            line=dict(width=0), showlegend=False, hoverinfo="skip",
-                        ))
-                        fig_spline.add_trace(go.Scatter(
-                            x=pct_grid * 100, y=eff_mean,
-                            mode="lines",
-                            line=dict(color=c, width=2.5),
-                            name=label,
-                            hovertemplate=(
-                                "Percentile: %{x:.0f}<br>"
-                                f"{label}: %{{y:.4f}}<extra></extra>"
-                            ),
-                        ))
-
-                    fig_spline.add_hline(
-                        y=1.0, line=dict(dash="dash", color="grey", width=1.2),
-                        annotation_text="Full passthrough (β=1)",
-                        annotation_position="top right",
-                    )
-                    fig_spline.add_hline(
-                        y=0.0, line=dict(dash="dot", color="lightgrey", width=1),
-                        annotation_text="Zero passthrough",
-                        annotation_position="bottom right",
-                    )
-                    fig_spline.update_layout(
-                        template="plotly_white", height=420,
-                        xaxis_title="Percentile",
-                        yaxis_title="Effective Passthrough Coefficient",
-                        legend=dict(orientation="h", x=0.15, y=-0.15),
-                        margin=dict(l=60, r=20, t=30, b=80),
-                    )
-                    st.plotly_chart(fig_spline, use_container_width=True)
                 else:
-                    st.info("Spline tilt parameters (beta_p_pos / beta_p_neg) not found in parameter data.")
+                    st.warning(
+                        "beta0_pos / beta0_neg not found in the parameter data. "
+                        "Check the debug expander above for actual param names."
+                    )
 
+                # σ and ν
                 st.markdown(
                     '<div class="section-header">USE — Noise and Tail Parameters Over Time</div>',
                     unsafe_allow_html=True,
@@ -1778,6 +1620,7 @@ with tab_predictors:
                 other_params    = [p for p in ["sigma", "nu"] if p in avail_params]
                 param_labels_u  = {"sigma": "σ Noise Scale", "nu": "ν Degrees of Freedom"}
                 param_colours_u = {"sigma": SLATE_BLUE, "nu": ESPRESSO}
+
                 if other_params:
                     fig_par2 = go.Figure()
                     for param in other_params:
@@ -1796,6 +1639,10 @@ with tab_predictors:
                             mode="lines+markers",
                             line=dict(color=c, width=2.5), marker=dict(size=7),
                             name=param_labels_u.get(param, param),
+                            hovertemplate=(
+                                f"<b>{param_labels_u.get(param, param)}</b><br>"
+                                "Year: %{x}<br>Mean: %{y:.4f}<extra></extra>"
+                            ),
                         ))
                     fig_par2.update_layout(
                         template="plotly_white", height=380,
@@ -1804,7 +1651,10 @@ with tab_predictors:
                         margin=dict(l=60, r=20, t=30, b=80),
                     )
                     st.plotly_chart(fig_par2, use_container_width=True)
+                else:
+                    st.info("sigma / nu not found in parameter data.")
 
+                # All params trajectory grid
                 st.markdown(
                     '<div class="section-header">USE — All Parameter Trajectories</div>',
                     unsafe_allow_html=True,
@@ -1836,6 +1686,10 @@ with tab_predictors:
                             mode="lines+markers",
                             line=dict(color=c, width=2), marker=dict(size=5),
                             showlegend=False,
+                            hovertemplate=(
+                                f"<b>{PARAM_MAP_USE.get(param, param)}</b><br>"
+                                "Year: %{x}<br>Mean: %{y:.4f}<extra></extra>"
+                            ),
                         ), row=row, col=col)
                     fig_grid.update_layout(
                         template="plotly_white", height=nr * 240,
@@ -1843,15 +1697,23 @@ with tab_predictors:
                     )
                     st.plotly_chart(fig_grid, use_container_width=True)
 
+            # ── WASE: forest plot + trajectories + SNR ─────────────
             if pred_model == "WASE":
-
                 st.markdown(
                     '<div class="section-header">WASE — Coefficient Forest Plot</div>',
                     unsafe_allow_html=True,
                 )
+                st.markdown(
+                    '<div class="section-sub">Posterior means ± 90% HDI for all structural '
+                    'covariates, averaged across LOCO folds. Parameters whose HDI straddles '
+                    'zero have little empirical signal in the data.</div>',
+                    unsafe_allow_html=True,
+                )
+
                 summary = (
                     params_df.groupby("param")[["mean", "q05", "q95"]]
-                    .mean().reset_index()
+                    .mean()
+                    .reset_index()
                 )
                 summary["param_label"] = summary["param"].map(pmap).fillna(summary["param"])
                 summary = summary.sort_values("mean", ascending=False)
@@ -1859,7 +1721,8 @@ with tab_predictors:
                 if not summary["mean"].isna().all():
                     fig_forest = go.Figure()
                     fig_forest.add_trace(go.Scatter(
-                        x=summary["mean"], y=summary["param_label"],
+                        x=summary["mean"],
+                        y=summary["param_label"],
                         error_x=dict(
                             type="data", symmetric=False,
                             array=(summary["q95"] - summary["mean"]).clip(lower=0).values,
@@ -1871,7 +1734,9 @@ with tab_predictors:
                         hovertemplate="<b>%{y}</b><br>Mean: %{x:.4f}<extra></extra>",
                         showlegend=False,
                     ))
-                    fig_forest.add_vline(x=0, line=dict(dash="dash", color="grey", width=1.2))
+                    fig_forest.add_vline(
+                        x=0, line=dict(dash="dash", color="grey", width=1.2)
+                    )
                     fig_forest.update_layout(
                         template="plotly_white",
                         height=max(400, len(summary) * 45),
@@ -1880,16 +1745,25 @@ with tab_predictors:
                         margin=dict(l=260, r=20, t=30, b=60),
                     )
                     st.plotly_chart(fig_forest, use_container_width=True)
+                else:
+                    st.warning("All mean values are NaN — check the debug expander above.")
 
+                # Coefficient trajectories over focal years
                 if yr_col in params_df.columns:
                     st.markdown(
                         '<div class="section-header">WASE — Coefficient Stability Across Folds</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        '<div class="section-sub">How key structural coefficients evolve across '
+                        'focal years. Stable bands confirm parameter identifiability.</div>',
                         unsafe_allow_html=True,
                     )
                     key_wase = [p for p in [
                         "gdp_elasticity", "u5_mortality_effect", "rural_share_effect",
                         "gov_rev_effect", "res_rents_effect", "gdp_growth_effect",
                     ] if p in params_df["param"].unique()]
+
                     if key_wase:
                         from plotly.subplots import make_subplots
                         nc = 2
@@ -1916,6 +1790,10 @@ with tab_predictors:
                                 mode="lines+markers",
                                 line=dict(color=c, width=2), marker=dict(size=5),
                                 showlegend=False,
+                                hovertemplate=(
+                                    f"<b>{pmap.get(param, param)}</b><br>"
+                                    "Year: %{x}<br>Mean: %{y:.4f}<extra></extra>"
+                                ),
                             ), row=row, col=col)
                         fig_traj.update_layout(
                             template="plotly_white", height=nr * 250,
@@ -1923,68 +1801,18 @@ with tab_predictors:
                         )
                         st.plotly_chart(fig_traj, use_container_width=True)
 
-                rbf_params = [p for p in ["rbf_weight_1", "rbf_weight_2", "rbf_weight_3"]
-                              if p in params_df["param"].unique()]
-                if rbf_params:
-                    st.markdown(
-                        '<div class="section-header">WASE — RBF Spline Weights Across Percentiles</div>',
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown(
-                        '<div class="section-sub">'
-                        'The WASE model uses 5 RBF (radial basis function) knots evenly spaced '
-                        'across the percentile range. The chart below shows the posterior mean '
-                        'weight at each knot, indicating where the spline contributes most to '
-                        'shaping the predicted distribution.'
-                        '</div>',
-                        unsafe_allow_html=True,
-                    )
-                    n_knots    = 5
-                    knot_pcts  = np.linspace(0.1, 0.9, n_knots) * 100
-                    all_rbf    = [p for p in params_df["param"].unique() if p.startswith("rbf_weight")]
-                    all_rbf    = sorted(all_rbf, key=lambda x: int(x.split("_")[-1]) if x.split("_")[-1].isdigit() else 99)
-                    rbf_knot_x = knot_pcts[:len(all_rbf)]
-                    rbf_means  = []
-                    rbf_lo     = []
-                    rbf_hi     = []
-                    for rp in all_rbf:
-                        rows = params_df[params_df["param"] == rp]
-                        rbf_means.append(float(rows["mean"].mean()))
-                        rbf_lo.append(float(rows["q05"].mean()) if "q05" in rows.columns else float(rows["mean"].mean()))
-                        rbf_hi.append(float(rows["q95"].mean()) if "q95" in rows.columns else float(rows["mean"].mean()))
-
-                    fig_rbf = go.Figure()
-                    fig_rbf.add_trace(go.Scatter(
-                        x=np.concatenate([rbf_knot_x, rbf_knot_x[::-1]]),
-                        y=np.concatenate([rbf_hi, rbf_lo[::-1]]),
-                        fill="toself", fillcolor=hex_to_rgba(WASE_COLOUR, 0.20),
-                        line=dict(width=0), showlegend=False, hoverinfo="skip",
-                    ))
-                    fig_rbf.add_trace(go.Scatter(
-                        x=rbf_knot_x, y=rbf_means,
-                        mode="lines+markers",
-                        line=dict(color=WASE_COLOUR, width=2.5),
-                        marker=dict(size=10, color=WASE_COLOUR, symbol="diamond"),
-                        name="RBF Weight (posterior mean)",
-                        hovertemplate=(
-                            "Knot at p=%{x:.0f}th pct<br>"
-                            "Weight: %{y:.4f}<extra></extra>"
-                        ),
-                    ))
-                    fig_rbf.add_hline(y=0, line=dict(dash="dot", color="grey", width=1))
-                    fig_rbf.update_layout(
-                        template="plotly_white", height=380,
-                        xaxis_title="Percentile (knot location)",
-                        yaxis_title="Posterior Mean RBF Weight",
-                        legend=dict(orientation="h", y=-0.15),
-                        margin=dict(l=60, r=20, t=30, b=80),
-                    )
-                    st.plotly_chart(fig_rbf, use_container_width=True)
-
+                # SNR bar chart
                 st.markdown(
                     '<div class="section-header">WASE — Predictor Signal-to-Noise Ratio</div>',
                     unsafe_allow_html=True,
                 )
+                st.markdown(
+                    '<div class="section-sub">|Posterior mean| / posterior SD averaged across '
+                    'folds. SNR > 1 means the signal exceeds the noise; SNR < 1 indicates the '
+                    'posterior barely moved from the prior.</div>',
+                    unsafe_allow_html=True,
+                )
+
                 if "sd" in params_df.columns:
                     snr_df = (
                         params_df.groupby("param")[["mean", "sd"]]
@@ -1997,6 +1825,7 @@ with tab_predictors:
                     )
                     snr_df["param_label"] = snr_df["param"].map(pmap).fillna(snr_df["param"])
                     snr_df = snr_df.dropna(subset=["snr"]).sort_values("snr", ascending=True)
+
                     if len(snr_df) > 0:
                         bar_colours_snr = [
                             WASE_COLOUR if v >= 1 else LIGHT_GRAY
