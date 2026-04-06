@@ -137,9 +137,22 @@ positive and negative components. If any year in the range is missing GDP data, 
 entire pair is excluded — the model never trains on pairs where the GDP path is
 incomplete.
 
-Pairs where the survey gap exceeds 50 years are dropped. The pair-level data is
-expanded to percentile level, and logit(p) values are standardised to mean 0, sd 1
-from the training set (with centre and scale saved for application to test data).
+The pair-level data is expanded to percentile level, and logit(p) values are standardised
+to mean 0, sd 1 from the training set (with centre and scale saved for application to test 
+data).
+
+Con φ USE trains exclusively on comparable survey pairs — consecutive surveys within 
+the same comparable spell — rather than attempting to bridge non-comparable sequences. 
+This contrasts with the World Bank's PIP, which develops three approaches (A, B, C) 
+that progressively incorporate more information from older and non-comparable surveys to 
+reconstruct complete historical poverty series back to 1981. 
+
+The difference reflects the distinct objectives: PIP requires a poverty estimate for 
+every country-year over four decades, necessitating assumptions about how much to trust
+old data; Con φ is a forecasting system that projects forward from recent survey anchors, 
+so the historical reconstruction problem does not arise. Training only on comparable pairs
+ensures that the learned passthrough rates are not contaminated by measurement artefacts 
+from changes in survey design.
 
 #### Logit Percentile Transformation
 

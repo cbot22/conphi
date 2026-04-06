@@ -106,30 +106,49 @@ only information that was available as of year *t*:
 
 ### GDP Growth Construction
 
-GDP growth (`gdp_growth`) is a critical input to both models and is computed as the
+GDP Growth Construction
+GDP growth (gdp_growth) is a critical input to both models and is computed as the
 first difference of log GDP per capita in PPP terms:
-
-```
 gdp_growth_t = log(GDP_pp_t) − log(GDP_pp_{t−1}) = diff(log_gdp_pp)
-```
-
 This is preferred over percentage change of real local-currency GDP per capita for
 several reasons:
 
-1. **Coverage**: `log_gdp_pp` (from the IMF WEO indicator `PPPPC`) covers ~122
-   countries versus ~85 for real local-currency GDP per capita (`NGDPRPC`).
+Coverage: log_gdp_pp (from the IMF WEO indicator PPPPC) covers ~122
+countries versus ~85 for real local-currency GDP per capita (NGDPRPC). The
+coverage gap arises because PPP conversion relies on externally anchored ICP
+benchmarks that the IMF can extrapolate for nearly all member countries, whereas
+real local-currency GDP requires each country's statistical office to maintain a
+consistent deflator series — something many LICs lack.
+Exact additivity: summing diff(log) over a time interval gives the exact
+log growth ratio: Σ diff(log GDP) = log(GDP_T / GDP_0). This property is
+exploited directly by USE when it decomposes cumulative GDP growth into
+positive and negative components.
+Unit consistency: PPP units match the consumption target (2017 PPP USD/day),
+ensuring the GDP-consumption relationship is estimated in commensurate units.
+Internal consistency: since log_gdp_pp is also used as the level covariate
+in WASE, growth is mechanically the first difference of the same variable —
+avoiding any ambiguity about which GDP concept is being used.
 
-2. **Exact additivity**: summing `diff(log)` over a time interval gives the exact
-   log growth ratio: Σ diff(log GDP) = log(GDP_T / GDP_0). This property is
-   exploited directly by USE when it decomposes cumulative GDP growth into
-   positive and negative components.
+A known trade-off is that diff(log(PPPPC)) captures both real output growth and
+shifts in relative price levels (via terms-of-trade movements and ICP extrapolation
+drift), whereas real local-currency growth isolates output changes. This means the
+learned passthrough rates β absorb some relative-price variation alongside the
+real consumption-GDP relationship.
+This construction differs from the World Bank's Poverty and Inequality Platform
+(PIP), which uses real GDP per capita for low-income and lower-middle-income
+countries but switches to Household Final Consumption Expenditure (HFCE) per capita
+for upper-middle and high-income countries (Mahler et al. 2025). Con φ uses a single
+GDP-based series throughout. PIP also applies a fixed symmetric passthrough discount
+of 0.7 to consumption vectors, reflecting an assumption that 30% of GDP growth is
+saved rather than consumed. Con φ instead learns the passthrough from data, finding
+it to be asymmetric: contraction passthrough (~0.65–0.85) substantially exceeds
+expansion passthrough (~0.44–0.47), consistent with the empirical regularity that
+household consumption falls more sharply during downturns than it rises during
+booms. A further difference is that PIP's national accounts series are not
+vintage-controlled — they use the latest revised GDP figures retrospectively —
+whereas Con φ loads the WEO file published in October of each vintage year, so GDP
+values beyond that date are IMF forecasts rather than realised outturns.
 
-3. **Unit consistency**: PPP units match the consumption target (2017 PPP USD/day),
-   ensuring the GDP-consumption relationship is estimated in commensurate units.
-
-4. **Internal consistency**: since `log_gdp_pp` is also used as the level covariate
-   in WASE, growth is mechanically the first difference of the same variable —
-   avoiding any ambiguity about which GDP concept is being used.
 
 ### Imputation Strategy
 
@@ -143,7 +162,7 @@ within each vintage-specific pipeline so that each vintage file is self-consiste
   A country with oil in 2010 likely had oil in 2005 — leading zeros are not
   appropriate here.
 
-- **Government revenue and expenditure**: backward-fill → interpolation →
+- **Government revenue**: backward-fill → interpolation →
   forward-fill within country, then a GDP-conditioned cascade imputation:
   region23 × GDP-quartile × year median → region × GDP-quartile × year median →
   GDP-quartile × year median → year median → global median. The GDP conditioning
