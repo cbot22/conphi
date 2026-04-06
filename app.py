@@ -322,7 +322,8 @@ st.markdown(f"""
     [data-testid="stSidebar"] [data-testid="stRadio"] label {{ font-size: 0.82rem !important; }}
     [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] {{ gap: 0.4rem; }}
 
-    #MainMenu {{visibility: hidden;}} footer {{visibility: hidden;}} header {{visibility: hidden;}}
+    
+    #MainMenu {{visibility: hidden;}} footer {{visibility: hidden;}}
 </style>
 """, unsafe_allow_html=True)
 
