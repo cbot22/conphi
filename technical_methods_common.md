@@ -123,22 +123,28 @@ Exact additivity: summing diff(log) over a time interval gives the exact
 log growth ratio: Σ diff(log GDP) = log(GDP_T / GDP_0). This property is
 exploited directly by USE when it decomposes cumulative GDP growth into
 positive and negative components.
-Unit consistency: PPP units match the consumption target (2017 PPP USD/day),
+Unit consistency: PPP units match the consumption target (2021 PPP USD/day),
 ensuring the GDP-consumption relationship is estimated in commensurate units.
 Internal consistency: since log_gdp_pp is also used as the level covariate
 in WASE, growth is mechanically the first difference of the same variable —
 avoiding any ambiguity about which GDP concept is being used.
 
-A known trade-off is that diff(log(PPPPC)) captures both real output growth and
-shifts in relative price levels (via terms-of-trade movements and ICP extrapolation
-drift), whereas real local-currency growth isolates output changes. This means the
-learned passthrough rates β absorb some relative-price variation alongside the
-real consumption-GDP relationship.
+A known trade-off is that diff(log(PPPPC)) reflects both real output growth and
+shifts in relative price levels across countries. However, since the consumption
+target (PIP percentiles) is expressed in the same PPP unit system, relative price
+movements appear on both sides of the regression and are largely absorbed by the
+learned passthrough coefficient. The residual concern is limited to the wedge
+between economy-wide PPP conversion factors (which cover investment, government
+spending, and trade) and household-consumption-specific PPPs — a second-order
+effect for most countries in most years.
+
+
 This construction differs from the World Bank's Poverty and Inequality Platform
 (PIP), which uses real GDP per capita for low-income and lower-middle-income
 countries but switches to Household Final Consumption Expenditure (HFCE) per capita
-for upper-middle and high-income countries (Mahler et al. 2025). Con φ uses a single
-GDP-based series throughout. PIP also applies a fixed symmetric passthrough discount
+for upper-middle and high-income countries (Mahler et al. 2025). 
+
+Con φ uses a single GDP-based series throughout. PIP also applies a fixed symmetric passthrough discount
 of 0.7 to consumption vectors, reflecting an assumption that 30% of GDP growth is
 saved rather than consumed. Con φ instead learns the passthrough from data, finding
 it to be asymmetric: contraction passthrough (~0.65–0.85) substantially exceeds
