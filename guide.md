@@ -46,15 +46,16 @@ Restricts the chart and all downstream calculations to a slice of the consumptio
 
 ---
 
-### Geographic Filters
+### Filters
 
-The four geographic filters — **Year**, **Region**, **Sub-Region**, and **Country** — work together as a cascading system. Selections at a broader level restrict the options available at a narrower level.
+The filters — Year, Yrs since last survey, Region, Sub-Region, and Country — work together as a cascading system. Selections at a broader level restrict the options available at a narrower level.
+How the cascade works:
 
-**How the cascade works:**
-1. **Year** is applied first, limiting all downstream options to years with available data.
-2. **Region** filters the available Sub-Regions and Countries to those within the selected region.
-3. **Sub-Region** further filters the available Countries.
-4. **Country** selects a single country for detailed inspection.
+- Year is applied first, limiting all downstream options to years with available data.
+- Yrs since last survey (USE only) filters to observations where the survey anchor is within the selected recency window (e.g. ≤2 means the prediction is based on a survey no more than 2 years old). This further restricts the available Regions, Sub-Regions, and Countries.
+- Region filters the available Sub-Regions and Countries to those within the selected region.
+- Sub-Region further filters the available Countries.
+- Country selects a single country for detailed inspection.
 
 **Important:** If you select a Region or Sub-Region that is incompatible with a Country you previously selected, the Country filter will automatically reset to *All Countries*. This prevents silent mismatches where the geographic filters contradict each other.
 
