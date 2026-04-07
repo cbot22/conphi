@@ -161,9 +161,6 @@ values beyond that date are IMF forecasts rather than realised outturns.
 Missing covariate values are filled using the mildest defensible method, applied
 within each vintage-specific pipeline so that each vintage file is self-consistent:
 
-- **Remittances**: leading zeros → linear interpolation → trailing forward-fill.
-  Zero remittances before the first observation is plausible for many countries.
-
 - **Resource rents**: backward-fill → linear interpolation → trailing forward-fill.
   A country with oil in 2010 likely had oil in 2005 — leading zeros are not
   appropriate here.
