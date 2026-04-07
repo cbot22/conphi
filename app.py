@@ -364,7 +364,7 @@ if "selected_year" not in st.session_state:
     st.session_state.selected_year = "All Years"
 
 # ============================================================
-# SIDEBAR  — Year → Region → Sub-Region → Country (cascade)
+# SIDEBAR  — Year → dt → Region → Sub-Region → Country (cascade)
 #            with reset-on-conflict for country
 # ============================================================
 with st.sidebar:
@@ -384,7 +384,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # ── Cascading filters: Year → Region → Sub-Region → Country → WFP ──
+    # ── Cascading filters: Year → dt → Region → Sub-Region → Country → WFP ──
     # Build a base frame scoped to the current model/pred/data selections
     _cascade_base = fact[
         (fact[COL["model_type"]]      == selected_model) &
@@ -407,20 +407,52 @@ with st.sidebar:
     if selected_year != "All Years":
         _cascade_yr = _cascade_yr[_cascade_yr[COL["prediction_year"]] == int(selected_year)]
 
-    # ── 2. Region (cascades from year) ────────────────────────
-    if COL["region"] in _cascade_yr.columns:
-        avail_regions_cascade = sorted(_cascade_yr[COL["region"]].dropna().unique())
+    # ── 1b. Years Since Last Survey (USE only) ────────────────
+    if selected_model == "USE" and COL["dt"] in _cascade_yr.columns:
+        _dt_vals = _cascade_yr[COL["dt"]].dropna()
+        if len(_dt_vals) > 0:
+            max_dt_avail = int(_dt_vals.max())
+            if max_dt_avail >= 1:
+                # Build options: "All", "≤1", "≤2", ... "≤max"
+                dt_opts = ["All"] + [f"≤{d}" for d in range(1, max_dt_avail + 1)]
+                selected_dt_label = st.selectbox(
+                    "Yrs since last survey",
+                    dt_opts,
+                    index=0,
+                    key="sidebar_dt",
+                )
+                if selected_dt_label == "All":
+                    selected_max_dt = None
+                else:
+                    selected_max_dt = int(selected_dt_label.replace("≤", ""))
+            else:
+                selected_max_dt = None
+        else:
+            selected_max_dt = None
+    else:
+        selected_max_dt = None
+
+    # Apply dt filter to the cascade so downstream filters respect it
+    _cascade_dt = _cascade_yr.copy()
+    if selected_max_dt is not None and COL["dt"] in _cascade_dt.columns:
+        _cascade_dt = _cascade_dt[
+            _cascade_dt[COL["dt"]].isna() | (_cascade_dt[COL["dt"]] <= selected_max_dt)
+        ]
+
+    # ── 2. Region (cascades from year + dt) ───────────────────
+    if COL["region"] in _cascade_dt.columns:
+        avail_regions_cascade = sorted(_cascade_dt[COL["region"]].dropna().unique())
     else:
         avail_regions_cascade = all_regions
     selected_region = st.selectbox(
         "Region", ["All"] + avail_regions_cascade, index=0, key="sidebar_region"
     )
 
-    _cascade_region = _cascade_yr.copy()
+    _cascade_region = _cascade_dt.copy()
     if selected_region != "All" and COL["region"] in _cascade_region.columns:
         _cascade_region = _cascade_region[_cascade_region[COL["region"]] == selected_region]
 
-    # ── 3. Sub-Region (cascades from year + region) ───────────
+    # ── 3. Sub-Region (cascades from year + dt + region) ──────
     if COL["sub_region"] in _cascade_region.columns:
         avail_subregions = sorted(_cascade_region[COL["sub_region"]].dropna().unique())
     else:
@@ -433,7 +465,7 @@ with st.sidebar:
     if selected_subregion != "All" and COL["sub_region"] in _cascade_sub.columns:
         _cascade_sub = _cascade_sub[_cascade_sub[COL["sub_region"]] == selected_subregion]
 
-    # ── 4. Country (cascades from year + region + sub-region) ─
+    # ── 4. Country (cascades from year + dt + region + sub-region) ─
     # Reset-on-conflict: if the stored country is no longer in the
     # available list given the current region/sub-region, clear it.
     avail_isos_cascade  = sorted(_cascade_sub[COL["country_code"]].unique())
@@ -477,6 +509,9 @@ def apply_sidebar(df, force_validated=False):
         (out[COL["percentile"]] >= pct_range[0]) &
         (out[COL["percentile"]] <= pct_range[1])
     ]
+    # ── dt filter (USE only) ──────────────────────────────────
+    if selected_max_dt is not None and COL["dt"] in out.columns:
+        out = out[out[COL["dt"]].isna() | (out[COL["dt"]] <= selected_max_dt)]
     if selected_wfp == "WFP Countries":
         out = out[out[COL["wfp_country"]] == "Yes"]
     if selected_region != "All" and COL["region"] in out.columns:
@@ -501,6 +536,9 @@ def filter_diag_residuals(df):
             (out["percentile"] >= pct_range[0]) &
             (out["percentile"] <= pct_range[1])
         ]
+    # ── dt filter (USE only) ──────────────────────────────────
+    if selected_max_dt is not None and "dt" in out.columns:
+        out = out[out["dt"].isna() | (out["dt"] <= selected_max_dt)]
     if selected_region != "All" and "region" in out.columns:
         out = out[out["region"] == selected_region]
     if selected_subregion != "All":
@@ -683,12 +721,12 @@ st.components.v1.html(
         }}
 
         function restoreAndAttach() {{
-            const tabList = window.parent.document.querySelector(
+            var tabList = window.parent.document.querySelector(
                 '[data-baseweb="tab-list"]'
             );
             if (!tabList) {{ setTimeout(restoreAndAttach, 60); return; }}
 
-            const buttons = tabList.querySelectorAll('button[role="tab"]');
+            var buttons = tabList.querySelectorAll('button[role="tab"]');
             if (buttons.length === 0) {{ setTimeout(restoreAndAttach, 60); return; }}
 
             if (buttons[WANT] &&
@@ -820,6 +858,8 @@ with tab_explorer:
         if mape_d is not None: bh += f'<span class="metric-badge"><span class="label">MAPE </span><span class="value">{mape_d:.1f}%</span></span>'
         bh += f'<span class="metric-badge"><span class="label">Surveys </span><span class="value">{n_surveys:,}</span></span>'
         bh += f'<span class="metric-badge"><span class="label">Percentiles </span><span class="value">{pct_range[0]}–{pct_range[1]}</span></span>'
+        if selected_max_dt is not None:
+            bh += f'<span class="metric-badge"><span class="label">dt </span><span class="value">≤{selected_max_dt}</span></span>'
         st.markdown(bh, unsafe_allow_html=True)
         st.markdown("")
 
@@ -911,6 +951,8 @@ with tab_explorer:
         tp = [selected_name if selected_name != "All Countries" else "All Countries"]
         if selected_year != "All Years": tp.append(str(selected_year))
         tp.append(f"{selected_model} · {selected_pred}")
+        if selected_max_dt is not None:
+            tp.append(f"dt ≤ {selected_max_dt}")
         fig.update_layout(
             template="plotly_white", height=560,
             xaxis_title="Percentile",
@@ -930,6 +972,7 @@ with tab_explorer:
                 COL["lower_predictive_band"], COL["upper_predictive_band"],
                 COL["percentage_error"], COL["model_type"],
                 COL["prediction_type"], COL["data_type"],
+                COL["dt"],
             ] if c in df.columns]
             st.dataframe(
                 df[dc].sort_values([COL["country_code"], COL["prediction_year"], COL["percentile"]]),
@@ -1016,10 +1059,13 @@ with tab_performance:
     use_m  = _quick_metrics(_use_v)
     wase_m = _quick_metrics(_wase_v)
 
+    # Build dt context string for the summary prose
+    _dt_context = f" (dt ≤ {selected_max_dt})" if selected_max_dt is not None else ""
+
     if eval_model == "USE" and use_m:
         prose = (
             f"Across <strong>{use_m['n']:,} validated observations</strong> in "
-            f"<strong>{use_m['ctries']} countries</strong>, the USE model achieves "
+            f"<strong>{use_m['ctries']} countries</strong>{_dt_context}, the USE model achieves "
             f"R² = <strong>{use_m['r2']:.3f}</strong> on the consumption scale "
             f"(R² = {use_m['r2_log']:.3f} in log space), "
             f"MAE = <strong>${use_m['mae']:.2f}/day</strong>, "
@@ -1046,6 +1092,7 @@ with tab_performance:
     st.markdown(
         f'<div class="section-sub">Model = {eval_model} · Prediction Type = {selected_pred} · '
         f'Percentiles {pct_range[0]}–{pct_range[1]}'
+        + (f' · dt ≤ {selected_max_dt}' if selected_max_dt is not None else '')
         + (f' · Country = {selected_name}' if selected_name != "All Countries" else '')
         + (f' · Region = {selected_region}' if selected_region != "All" else '')
         + (f' · WFP Countries Only' if selected_wfp == "WFP Countries" else '')
@@ -1061,12 +1108,14 @@ with tab_performance:
             f"{int(res_df[yr_col].min())}–{int(res_df[yr_col].max())}"
             if yr_col in res_df.columns else "—"
         )
-        st.markdown(
+        badge_html = (
             f'<span class="metric-badge"><span class="label">Obs </span><span class="value">{badge_n:,}</span></span>'
             f'<span class="metric-badge"><span class="label">Countries </span><span class="value">{badge_iso}</span></span>'
-            f'<span class="metric-badge"><span class="label">Years </span><span class="value">{badge_yrs}</span></span>',
-            unsafe_allow_html=True,
+            f'<span class="metric-badge"><span class="label">Years </span><span class="value">{badge_yrs}</span></span>'
         )
+        if selected_max_dt is not None:
+            badge_html += f'<span class="metric-badge"><span class="label">dt </span><span class="value">≤{selected_max_dt}</span></span>'
+        st.markdown(badge_html, unsafe_allow_html=True)
         st.markdown("")
 
         if eval_groupby == "Overall":
