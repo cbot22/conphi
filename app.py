@@ -256,17 +256,18 @@ def r2_from_cols(obs, pred):
 
 @st.cache_data
 def _build_persistence(res, fact_df):
-    """Join USE residuals to fact table to recover anchor consumption.
+    """Join USE residuals to recover anchor consumption for persistence baseline.
 
-    The persistence (naïve) forecast for each row is the observed log
-    consumption at the anchor survey — i.e. carry forward unchanged.
+    The persistence (naïve) forecast = anchor survey value carried forward.
+    We look up the anchor's observed log consumption from the fact table,
+    matching on (iso, anchor_year == Prediction Year, percentile).
+
+    NOTE: this lookup only covers anchor years that appear as a Prediction Year
+    in the fact table (typically 2015+).  Rows with older anchors will have
+    NaN persistence values and are excluded from skill-score computation.
     """
-    # Build a lookup: (iso, year, percentile) -> observed log consumption
     anchor_lookup = (
-        fact_df[
-            (fact_df[COL["model_type"]] == "USE") &
-            (fact_df[COL["data_type"]] == "Validated")
-        ]
+        fact_df
         .dropna(subset=[COL["observed_log_consumption"]])
         .drop_duplicates(
             subset=[COL["country_code"], COL["prediction_year"], COL["percentile"]],
@@ -281,38 +282,21 @@ def _build_persistence(res, fact_df):
             COL["observed_log_consumption"]:  "anchor_log_cons",
         })
     )
-    # If no match via USE rows, also try any model type
-    if len(anchor_lookup) == 0:
-        anchor_lookup = (
-            fact_df
-            .dropna(subset=[COL["observed_log_consumption"]])
-            .drop_duplicates(
-                subset=[COL["country_code"], COL["prediction_year"], COL["percentile"]],
-                keep="first",
-            )
-            [[COL["country_code"], COL["prediction_year"], COL["percentile"],
-              COL["observed_log_consumption"]]]
-            .rename(columns={
-                COL["country_code"]:              "iso",
-                COL["prediction_year"]:           "anchor_year",
-                COL["percentile"]:                "percentile",
-                COL["observed_log_consumption"]:  "anchor_log_cons",
-            })
-        )
-    # Ensure join keys have matching types (both float to handle any NaNs)
     anchor_lookup["anchor_year"] = anchor_lookup["anchor_year"].astype(float)
     anchor_lookup["percentile"]  = anchor_lookup["percentile"].astype(float)
-    res = res.copy()
-    res["anchor_year"] = res["anchor_year"].astype(float)
-    res["percentile"]  = res["percentile"].astype(float)
-    out = res.merge(
+
+    res_out = res.copy()
+    res_out["anchor_year"] = res_out["anchor_year"].astype(float)
+    res_out["percentile"]  = res_out["percentile"].astype(float)
+
+    res_out = res_out.merge(
         anchor_lookup,
         on=["iso", "anchor_year", "percentile"],
         how="left",
     )
     # Persistence residual: anchor value minus observed
-    out["persist_resid_log"] = out["anchor_log_cons"] - out["obs_log"]
-    return out
+    res_out["persist_resid_log"] = res_out["anchor_log_cons"] - res_out["obs_log"]
+    return res_out
 
 # ============================================================
 # APP CONFIG
@@ -1589,21 +1573,32 @@ with tab_performance:
     # ── USE — Value Over Persistence ──────────────────────────
     if eval_model == "USE" and res_df is not None and len(res_df) > 0 and "anchor_year" in res_df.columns:
 
-        persist_df = _build_persistence(res_df, fact).copy()
-        persist_df = persist_df.dropna(subset=["persist_resid_log", "resid_log"])
+        persist_raw = _build_persistence(res_df, fact).copy()
+        n_total     = len(persist_raw)
+        persist_df  = persist_raw.dropna(subset=["persist_resid_log", "resid_log"])
+        n_matched   = len(persist_df)
+        n_dropped   = n_total - n_matched
 
         if len(persist_df) > 0:
             st.markdown(
                 '<div class="section-header">USE — Value Over Persistence</div>',
                 unsafe_allow_html=True,
             )
+            _coverage_note = ""
+            if n_dropped > 0:
+                _coverage_note = (
+                    f" <em>({n_dropped:,} of {n_total:,} rows excluded — anchor year "
+                    f"predates the validation range and observed anchor consumption "
+                    f"is not available; typically older surveys with large dt.)</em>"
+                )
             st.markdown(
                 '<div class="section-sub">'
                 'Persistence (naïve baseline) simply carries forward the last survey estimate '
                 'unchanged. Skill score = 1 − MAE<sub>model</sub> / MAE<sub>persistence</sub>: '
                 'positive means USE outperforms persistence; zero means no gain; '
                 'negative means persistence was better.'
-                '</div>',
+                + _coverage_note
+                + '</div>',
                 unsafe_allow_html=True,
             )
 
