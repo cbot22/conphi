@@ -256,46 +256,47 @@ def r2_from_cols(obs, pred):
 
 @st.cache_data
 def _build_persistence(res, fact_df):
-    """Join USE residuals to recover anchor consumption for persistence baseline.
+    """Build persistence baseline for USE residuals.
 
     The persistence (naïve) forecast = anchor survey value carried forward.
-    We look up the anchor's observed log consumption from the fact table,
-    matching on (iso, anchor_year == Prediction Year, percentile).
-
-    NOTE: this lookup only covers anchor years that appear as a Prediction Year
-    in the fact table (typically 2015+).  Rows with older anchors will have
-    NaN persistence values and are excluded from skill-score computation.
+    Uses the `anchor_log_cons` column directly if available in the residuals
+    (requires updated pipeline).  Falls back to a fact-table lookup for
+    anchor years that appear as a Prediction Year (typically 2015+).
     """
-    anchor_lookup = (
-        fact_df
-        .dropna(subset=[COL["observed_log_consumption"]])
-        .drop_duplicates(
-            subset=[COL["country_code"], COL["prediction_year"], COL["percentile"]],
-            keep="first",
-        )
-        [[COL["country_code"], COL["prediction_year"], COL["percentile"],
-          COL["observed_log_consumption"]]]
-        .rename(columns={
-            COL["country_code"]:              "iso",
-            COL["prediction_year"]:           "anchor_year",
-            COL["percentile"]:                "percentile",
-            COL["observed_log_consumption"]:  "anchor_log_cons",
-        })
-    )
-    anchor_lookup["anchor_year"] = anchor_lookup["anchor_year"].astype(float)
-    anchor_lookup["percentile"]  = anchor_lookup["percentile"].astype(float)
-
     res_out = res.copy()
-    res_out["anchor_year"] = res_out["anchor_year"].astype(float)
-    res_out["percentile"]  = res_out["percentile"].astype(float)
 
-    res_out = res_out.merge(
-        anchor_lookup,
-        on=["iso", "anchor_year", "percentile"],
-        how="left",
-    )
-    # Persistence residual: anchor value minus observed
-    res_out["persist_resid_log"] = res_out["anchor_log_cons"] - res_out["obs_log"]
+    if "anchor_log_cons" in res_out.columns and res_out["anchor_log_cons"].notna().any():
+        # ── Direct column available (full coverage) ───────────
+        res_out["persist_resid_log"] = res_out["anchor_log_cons"] - res_out["obs_log"]
+    else:
+        # ── Fallback: lookup from fact table (partial coverage) ─
+        anchor_lookup = (
+            fact_df
+            .dropna(subset=[COL["observed_log_consumption"]])
+            .drop_duplicates(
+                subset=[COL["country_code"], COL["prediction_year"], COL["percentile"]],
+                keep="first",
+            )
+            [[COL["country_code"], COL["prediction_year"], COL["percentile"],
+              COL["observed_log_consumption"]]]
+            .rename(columns={
+                COL["country_code"]:              "iso",
+                COL["prediction_year"]:           "anchor_year",
+                COL["percentile"]:                "percentile",
+                COL["observed_log_consumption"]:  "anchor_log_cons",
+            })
+        )
+        anchor_lookup["anchor_year"] = anchor_lookup["anchor_year"].astype(float)
+        anchor_lookup["percentile"]  = anchor_lookup["percentile"].astype(float)
+        res_out["anchor_year"] = res_out["anchor_year"].astype(float)
+        res_out["percentile"]  = res_out["percentile"].astype(float)
+        res_out = res_out.merge(
+            anchor_lookup,
+            on=["iso", "anchor_year", "percentile"],
+            how="left",
+        )
+        res_out["persist_resid_log"] = res_out["anchor_log_cons"] - res_out["obs_log"]
+
     return res_out
 
 # ============================================================
@@ -1694,30 +1695,29 @@ with tab_performance:
                 unsafe_allow_html=True,
             )
 
-            persist_view = st.selectbox(
-                "Break down by",
-                ["Overall", "Region", "Income Group", "dt"],
-                index=0,
-                key="persist_decomp_group",
-            )
+            persist_view = eval_groupby
 
             # Decomposition: |USE error| = |level error + growth adjustment|
             # level error = persist_resid_log (anchor − observed)
             # growth adj  = resid_log − persist_resid_log (what the model added)
             persist_df["growth_adj_log"] = persist_df["resid_log"] - persist_df["persist_resid_log"]
 
+            # Map eval_groupby to a residuals-level column name
+            _persist_gcol_map = {
+                "Region":              "region",
+                "Sub-Region":          "sub_region",
+                "Income Group":        "income_group",
+                "Year":                "target_year",
+                "Percentile":          "percentile",
+                "Country":             "country_name",
+                "dt (USE only)":       "dt",
+            }
             if persist_view == "Overall":
                 decomp_groups = persist_df.assign(_all="All")
                 decomp_gcol   = "_all"
-            elif persist_view == "dt" and "dt" in persist_df.columns:
+            elif persist_view in _persist_gcol_map and _persist_gcol_map[persist_view] in persist_df.columns:
                 decomp_groups = persist_df.copy()
-                decomp_gcol   = "dt"
-            elif persist_view == "Region" and "region" in persist_df.columns:
-                decomp_groups = persist_df.copy()
-                decomp_gcol   = "region"
-            elif persist_view == "Income Group" and "income_group" in persist_df.columns:
-                decomp_groups = persist_df.copy()
-                decomp_gcol   = "income_group"
+                decomp_gcol   = _persist_gcol_map[persist_view]
             else:
                 decomp_groups = persist_df.assign(_all="All")
                 decomp_gcol   = "_all"
@@ -1739,8 +1739,8 @@ with tab_performance:
             decomp_df = pd.DataFrame(decomp_rows)
 
             if len(decomp_df) > 0:
-                if decomp_gcol == "dt":
-                    decomp_df = decomp_df.sort_values("dt")
+                if decomp_gcol in ("dt", "target_year", "percentile"):
+                    decomp_df = decomp_df.sort_values(decomp_gcol)
 
                 fig_decomp = go.Figure()
 
@@ -1807,8 +1807,8 @@ with tab_performance:
                             "skill":        sk,
                         })
                     tbl_df = pd.DataFrame(tbl_rows)
-                    if decomp_gcol == "dt":
-                        tbl_df = tbl_df.sort_values("dt")
+                    if decomp_gcol in ("dt", "target_year", "percentile"):
+                        tbl_df = tbl_df.sort_values(decomp_gcol)
                     else:
                         tbl_df = tbl_df.sort_values("skill", ascending=False)
 
