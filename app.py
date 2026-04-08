@@ -254,6 +254,66 @@ def r2_from_cols(obs, pred):
     ss_t  = np.sum((o - o.mean()) ** 2)
     return float(1 - ss_r / ss_t) if ss_t > 1e-8 else np.nan
 
+@st.cache_data
+def _build_persistence(res, fact_df):
+    """Join USE residuals to fact table to recover anchor consumption.
+
+    The persistence (naïve) forecast for each row is the observed log
+    consumption at the anchor survey — i.e. carry forward unchanged.
+    """
+    # Build a lookup: (iso, year, percentile) -> observed log consumption
+    anchor_lookup = (
+        fact_df[
+            (fact_df[COL["model_type"]] == "USE") &
+            (fact_df[COL["data_type"]] == "Validated")
+        ]
+        .dropna(subset=[COL["observed_log_consumption"]])
+        .drop_duplicates(
+            subset=[COL["country_code"], COL["prediction_year"], COL["percentile"]],
+            keep="first",
+        )
+        [[COL["country_code"], COL["prediction_year"], COL["percentile"],
+          COL["observed_log_consumption"]]]
+        .rename(columns={
+            COL["country_code"]:              "iso",
+            COL["prediction_year"]:           "anchor_year",
+            COL["percentile"]:                "percentile",
+            COL["observed_log_consumption"]:  "anchor_log_cons",
+        })
+    )
+    # If no match via USE rows, also try any model type
+    if len(anchor_lookup) == 0:
+        anchor_lookup = (
+            fact_df
+            .dropna(subset=[COL["observed_log_consumption"]])
+            .drop_duplicates(
+                subset=[COL["country_code"], COL["prediction_year"], COL["percentile"]],
+                keep="first",
+            )
+            [[COL["country_code"], COL["prediction_year"], COL["percentile"],
+              COL["observed_log_consumption"]]]
+            .rename(columns={
+                COL["country_code"]:              "iso",
+                COL["prediction_year"]:           "anchor_year",
+                COL["percentile"]:                "percentile",
+                COL["observed_log_consumption"]:  "anchor_log_cons",
+            })
+        )
+    # Ensure join keys have matching types (both float to handle any NaNs)
+    anchor_lookup["anchor_year"] = anchor_lookup["anchor_year"].astype(float)
+    anchor_lookup["percentile"]  = anchor_lookup["percentile"].astype(float)
+    res = res.copy()
+    res["anchor_year"] = res["anchor_year"].astype(float)
+    res["percentile"]  = res["percentile"].astype(float)
+    out = res.merge(
+        anchor_lookup,
+        on=["iso", "anchor_year", "percentile"],
+        how="left",
+    )
+    # Persistence residual: anchor value minus observed
+    out["persist_resid_log"] = out["anchor_log_cons"] - out["obs_log"]
+    return out
+
 # ============================================================
 # APP CONFIG
 # ============================================================
@@ -1525,6 +1585,263 @@ with tab_performance:
                 margin=dict(l=60, r=20, t=30, b=60),
             )
             st.plotly_chart(fig_dt, use_container_width=True)
+
+    # ── USE — Value Over Persistence ──────────────────────────
+    if eval_model == "USE" and res_df is not None and len(res_df) > 0 and "anchor_year" in res_df.columns:
+
+        persist_df = _build_persistence(res_df, fact).copy()
+        persist_df = persist_df.dropna(subset=["persist_resid_log", "resid_log"])
+
+        if len(persist_df) > 0:
+            st.markdown(
+                '<div class="section-header">USE — Value Over Persistence</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                '<div class="section-sub">'
+                'Persistence (naïve baseline) simply carries forward the last survey estimate '
+                'unchanged. Skill score = 1 − MAE<sub>model</sub> / MAE<sub>persistence</sub>: '
+                'positive means USE outperforms persistence; zero means no gain; '
+                'negative means persistence was better.'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+
+            # ── Overall skill score badges ────────────────────
+            mae_model   = float(np.mean(np.abs(persist_df["resid_log"].values)))
+            mae_persist = float(np.mean(np.abs(persist_df["persist_resid_log"].values)))
+            skill_overall = 1.0 - mae_model / mae_persist if mae_persist > 1e-12 else np.nan
+
+            badge_persist = (
+                f'<span class="metric-badge"><span class="label">MAE Model </span>'
+                f'<span class="value">{mae_model:.4f}</span></span>'
+                f'<span class="metric-badge"><span class="label">MAE Persistence </span>'
+                f'<span class="value">{mae_persist:.4f}</span></span>'
+                f'<span class="metric-badge"><span class="label">Skill Score </span>'
+                f'<span class="value">{skill_overall:+.3f}</span></span>'
+                f'<span class="metric-badge"><span class="label">n </span>'
+                f'<span class="value">{len(persist_df):,}</span></span>'
+            )
+            st.markdown(badge_persist, unsafe_allow_html=True)
+            st.markdown("")
+
+            # ── Skill score by dt ─────────────────────────────
+            if "dt" in persist_df.columns:
+                dt_skill_rows = []
+                for dt_val, grp in persist_df.groupby("dt", dropna=False):
+                    rl  = grp["resid_log"].values
+                    prl = grp["persist_resid_log"].values
+                    mae_m = float(np.mean(np.abs(rl)))
+                    mae_p = float(np.mean(np.abs(prl)))
+                    sk    = 1.0 - mae_m / mae_p if mae_p > 1e-12 else np.nan
+                    dt_skill_rows.append({
+                        "dt":             dt_val,
+                        "mae_model":      mae_m,
+                        "mae_persist":    mae_p,
+                        "skill":          sk,
+                        "n_obs":          len(grp),
+                    })
+                dt_skill = pd.DataFrame(dt_skill_rows).dropna(subset=["dt"]).sort_values("dt")
+
+                if len(dt_skill) > 0:
+                    fig_skill = go.Figure()
+
+                    # Skill score line
+                    fig_skill.add_trace(go.Scatter(
+                        x=dt_skill["dt"], y=dt_skill["skill"],
+                        mode="lines+markers",
+                        line=dict(color=USE_COLOUR, width=3),
+                        marker=dict(size=10, color=USE_COLOUR, symbol="circle"),
+                        name="Skill Score",
+                        customdata=np.stack([
+                            dt_skill["mae_model"].values,
+                            dt_skill["mae_persist"].values,
+                            dt_skill["n_obs"].values,
+                        ], axis=1),
+                        hovertemplate=(
+                            "<b>dt = %{x}</b><br>"
+                            "Skill: %{y:+.3f}<br>"
+                            "MAE model: %{customdata[0]:.4f}<br>"
+                            "MAE persistence: %{customdata[1]:.4f}<br>"
+                            "n obs: %{customdata[2]:,}<extra></extra>"
+                        ),
+                    ))
+
+                    # Zero line (no skill)
+                    fig_skill.add_hline(
+                        y=0, line=dict(dash="dash", color="grey", width=1.2),
+                        annotation_text="No gain over persistence",
+                        annotation_position="bottom right",
+                    )
+
+                    fig_skill.update_layout(
+                        template="plotly_white", height=420,
+                        xaxis_title="Years Since Survey (dt)",
+                        yaxis_title="Skill Score  (1 − MAE_model / MAE_persistence)",
+                        margin=dict(l=60, r=20, t=30, b=60),
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig_skill, use_container_width=True)
+
+            # ── Butterfly: level vs growth error decomposition ─
+            st.markdown(
+                '<div class="section-header">USE — Level vs Growth Error Decomposition</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                '<div class="section-sub">'
+                'Decomposes USE prediction error into two sources: '
+                '<strong>Level error</strong> (error from the anchor survey alone, i.e. persistence error) '
+                'and <strong>Growth adjustment</strong> (the incremental change in error from applying '
+                'GDP passthrough). Negative growth adjustment = the model corrected the level error; '
+                'positive = the model made it worse.'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+
+            persist_view = st.selectbox(
+                "Break down by",
+                ["Overall", "Region", "Income Group", "dt"],
+                index=0,
+                key="persist_decomp_group",
+            )
+
+            # Decomposition: |USE error| = |level error + growth adjustment|
+            # level error = persist_resid_log (anchor − observed)
+            # growth adj  = resid_log − persist_resid_log (what the model added)
+            persist_df["growth_adj_log"] = persist_df["resid_log"] - persist_df["persist_resid_log"]
+
+            if persist_view == "Overall":
+                decomp_groups = persist_df.assign(_all="All")
+                decomp_gcol   = "_all"
+            elif persist_view == "dt" and "dt" in persist_df.columns:
+                decomp_groups = persist_df.copy()
+                decomp_gcol   = "dt"
+            elif persist_view == "Region" and "region" in persist_df.columns:
+                decomp_groups = persist_df.copy()
+                decomp_gcol   = "region"
+            elif persist_view == "Income Group" and "income_group" in persist_df.columns:
+                decomp_groups = persist_df.copy()
+                decomp_gcol   = "income_group"
+            else:
+                decomp_groups = persist_df.assign(_all="All")
+                decomp_gcol   = "_all"
+
+            decomp_rows = []
+            for key, grp in decomp_groups.groupby(decomp_gcol, dropna=False):
+                mean_level  = float(grp["persist_resid_log"].mean())
+                mean_growth = float(grp["growth_adj_log"].mean())
+                mae_level   = float(np.mean(np.abs(grp["persist_resid_log"].values)))
+                mae_growth  = float(np.mean(np.abs(grp["growth_adj_log"].values)))
+                decomp_rows.append({
+                    decomp_gcol:         key,
+                    "mean_level_error":  mean_level,
+                    "mean_growth_adj":   mean_growth,
+                    "mae_level":         mae_level,
+                    "mae_growth_adj":    mae_growth,
+                    "n_obs":             len(grp),
+                })
+            decomp_df = pd.DataFrame(decomp_rows)
+
+            if len(decomp_df) > 0:
+                if decomp_gcol == "dt":
+                    decomp_df = decomp_df.sort_values("dt")
+
+                fig_decomp = go.Figure()
+
+                # Level error (persistence) bars
+                fig_decomp.add_trace(go.Bar(
+                    x=decomp_df[decomp_gcol].astype(str),
+                    y=decomp_df["mean_level_error"],
+                    name="Level Error (persistence)",
+                    marker_color=SLATE_BLUE,
+                    customdata=decomp_df[["mae_level", "n_obs"]].values,
+                    hovertemplate=(
+                        "<b>%{x}</b><br>"
+                        "Mean level error: %{y:+.4f}<br>"
+                        "MAE (level): %{customdata[0]:.4f}<br>"
+                        "n: %{customdata[1]:,}<extra></extra>"
+                    ),
+                ))
+
+                # Growth adjustment bars (stacked on top)
+                fig_decomp.add_trace(go.Bar(
+                    x=decomp_df[decomp_gcol].astype(str),
+                    y=decomp_df["mean_growth_adj"],
+                    name="Growth Adjustment (GDP passthrough)",
+                    marker_color=USE_COLOUR,
+                    customdata=decomp_df[["mae_growth_adj", "n_obs"]].values,
+                    hovertemplate=(
+                        "<b>%{x}</b><br>"
+                        "Mean growth adj: %{y:+.4f}<br>"
+                        "MAE (growth adj): %{customdata[0]:.4f}<br>"
+                        "n: %{customdata[1]:,}<extra></extra>"
+                    ),
+                ))
+
+                fig_decomp.add_hline(
+                    y=0, line=dict(dash="dash", color="grey", width=1),
+                )
+
+                fig_decomp.update_layout(
+                    template="plotly_white", height=440,
+                    barmode="relative",
+                    xaxis_title=persist_view if persist_view != "Overall" else "",
+                    yaxis_title="Mean Log Residual",
+                    legend=dict(orientation="h", y=-0.18),
+                    margin=dict(l=60, r=20, t=30, b=80),
+                )
+                st.plotly_chart(fig_decomp, use_container_width=True)
+
+            # ── MAE comparison table ──────────────────────────
+            with st.expander("View persistence comparison table"):
+                if persist_view != "Overall" and len(decomp_df) > 0:
+                    # Build a richer table with model vs persistence MAE
+                    tbl_rows = []
+                    for key, grp in decomp_groups.groupby(decomp_gcol, dropna=False):
+                        rl  = grp["resid_log"].values
+                        prl = grp["persist_resid_log"].values
+                        mae_m = float(np.mean(np.abs(rl)))
+                        mae_p = float(np.mean(np.abs(prl)))
+                        sk    = 1.0 - mae_m / mae_p if mae_p > 1e-12 else np.nan
+                        tbl_rows.append({
+                            decomp_gcol:    key,
+                            "n_obs":        len(grp),
+                            "mae_model":    mae_m,
+                            "mae_persist":  mae_p,
+                            "skill":        sk,
+                        })
+                    tbl_df = pd.DataFrame(tbl_rows)
+                    if decomp_gcol == "dt":
+                        tbl_df = tbl_df.sort_values("dt")
+                    else:
+                        tbl_df = tbl_df.sort_values("skill", ascending=False)
+
+                    # Render as HTML table
+                    tbl_html = '<table class="summary-table"><thead><tr>'
+                    for c in [decomp_gcol, "n_obs", "mae_model", "mae_persist", "skill"]:
+                        tbl_html += f"<th>{c}</th>"
+                    tbl_html += "</tr></thead><tbody>"
+                    for _, row in tbl_df.iterrows():
+                        tbl_html += "<tr>"
+                        for c in [decomp_gcol, "n_obs", "mae_model", "mae_persist", "skill"]:
+                            v = row[c]
+                            if c == "n_obs":
+                                tbl_html += f"<td>{int(v):,}</td>"
+                            elif c == "skill":
+                                tbl_html += f"<td>{v:+.3f}</td>"
+                            elif isinstance(v, (float, np.floating)):
+                                tbl_html += f"<td>{v:.4f}</td>"
+                            else:
+                                tbl_html += f"<td>{v}</td>"
+                        tbl_html += "</tr>"
+                    tbl_html += "</tbody></table>"
+                    st.markdown(tbl_html, unsafe_allow_html=True)
+                else:
+                    st.write(
+                        f"Overall skill score: **{skill_overall:+.3f}** "
+                        f"(MAE model = {mae_model:.4f}, MAE persistence = {mae_persist:.4f})"
+                    )
 
     if eval_model == "WASE" and res_df is not None and len(res_df) > 0 and "horizon" in res_df.columns:
         st.markdown(
