@@ -78,6 +78,31 @@ For each vintage year and horizon:
 
 ---
 
+## USE — Value Over Persistence
+
+This section of the Model Performance tab answers a simple question: is the USE model actually adding value over just carrying the last survey forward unchanged? "Persistence" is the naïve baseline — assume nothing has changed since the last survey was conducted and use that anchor value as the prediction. It's the bar any forecasting model has to clear to justify its existence.
+
+The headline metric is the **skill score**: 1 − MAE_model / MAE_persistence. Positive means USE beats persistence, zero means no improvement, negative means persistence was better and you'd be better off ignoring the model. As a rule of thumb, a skill score around 0.05–0.10 is a meaningful gain at the country-year level given the noise in survey data; values above 0.20 are strong.
+
+### Skill score by dt
+
+This line chart shows the skill score on the y-axis against years since the last survey on the x-axis. Read it as the model's added value as the survey anchor ages. Expect the line to start near zero at dt=1 (when the anchor is fresh, persistence is hard to beat — there's not much GDP movement to translate into consumption change yet) and rise as dt grows (when the anchor is stale, persistence becomes increasingly wrong and any sensible GDP-passthrough adjustment helps). A flat or declining line at high dt would be a warning sign — it would suggest the passthrough mechanism is not extracting useful signal from cumulative GDP growth, and that the model is essentially treading water.
+
+The dashed grey line at zero is the no-skill threshold. Hover any point to see the underlying MAE for both the model and the persistence baseline alongside the sample size.
+
+### Level vs Growth Error Decomposition
+
+This stacked bar chart decomposes the average USE prediction error into two additive components for each group (region, year, dt, etc., depending on what you've selected in *Break down by*):
+
+- **Level error** (blue bars) — the error you'd have made using persistence alone. This is structural: it reflects how much consumption has actually drifted from the anchor over time, regardless of what the model does. Large blue bars mean the anchor was a poor approximation of the truth.
+- **Growth adjustment** (terracotta bars) — what USE added on top by applying GDP passthrough. The sign matters here: a *negative* growth adjustment that partially cancels a positive level error means the model successfully pulled the prediction closer to the truth. A *positive* growth adjustment that compounds with a positive level error means the model made things worse.
+
+The visual cue is whether the two bars push in opposite directions (model is correcting the anchor's drift, good) or the same direction (model is amplifying error, bad). The total bar height is the net mean residual; grouped breakdowns let you see whether the model's value-add is concentrated in particular regions, years, or dt windows. This is often more diagnostic than the skill score alone, because it tells you *why* the model is or isn't beating persistence rather than just whether it is.
+
+The expander below the chart provides a comparison table with model MAE, persistence MAE, and the per-group skill score, which is useful for spotting groups where the model underperforms even when the overall skill score is positive.
+
+---
+
 ## Tips
 
 - The **Results Explorer map** is clickable — selecting a country on the choropleth will update the Country filter in the sidebar.

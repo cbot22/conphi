@@ -923,6 +923,15 @@ with tab_explorer:
             hi   = p_df[COL["upper_predictive_band"]].values  if COL["upper_predictive_band"]  in p_df.columns else np.full(len(p_df), np.nan)
             err  = p_df[COL["percentage_error"]].values       if COL["percentage_error"]       in p_df.columns else np.full(len(p_df), np.nan)
 
+            # ── Compute % difference between predicted and observed ───
+            # err_pct = 100 * (pred - obs) / obs  (signed)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                err_pct = np.where(
+                    (obs != 0) & ~np.isnan(obs) & ~np.isnan(pred),
+                    100.0 * (pred - obs) / obs,
+                    np.nan,
+                )
+
             if show_ci:
                 ok = ~(np.isnan(lo) | np.isnan(hi))
                 if ok.any():
@@ -937,14 +946,14 @@ with tab_explorer:
                 marker=dict(size=4, color=mc_col),
                 line=dict(color=mc_col, width=2.5),
                 name=f"Predicted ({selected_model})",
-                customdata=np.stack([pct, pred, obs, lo, hi, err], axis=-1),
+                customdata=np.stack([pct, pred, obs, lo, hi, err_pct], axis=-1),
                 hovertemplate=(
                     "<b>Percentile %{customdata[0]:.0f}</b><br>"
                     "Predicted: %{customdata[1]:.3f} $/day<br>"
                     "Observed: %{customdata[2]:.3f} $/day<br>"
                     "Lower CI: %{customdata[3]:.3f}<br>"
                     "Upper CI: %{customdata[4]:.3f}<br>"
-                    "Error: %{customdata[5]:.1f}%<extra></extra>"
+                    "Pred − Obs: %{customdata[5]:+.1f}%<extra></extra>"
                 ),
             ))
             if is_validated:
@@ -955,6 +964,13 @@ with tab_explorer:
                         marker=dict(size=4, color=OBS_COLOUR, symbol="diamond"),
                         line=dict(color=OBS_COLOUR, width=2, dash="dot"),
                         name="Observed",
+                        customdata=np.stack([pct[om], pred[om], obs[om], err_pct[om]], axis=-1),
+                        hovertemplate=(
+                            "<b>Percentile %{customdata[0]:.0f}</b><br>"
+                            "Observed: %{customdata[2]:.3f} $/day<br>"
+                            "Predicted: %{customdata[1]:.3f} $/day<br>"
+                            "Pred − Obs: %{customdata[3]:+.1f}%<extra></extra>"
+                        ),
                     ))
         else:
             has_lo = COL["lower_predictive_band"] in df.columns
@@ -963,6 +979,27 @@ with tab_explorer:
             if has_lo: agg_d["ci_lo"] = (COL["lower_predictive_band"], "median")
             if has_hi: agg_d["ci_hi"] = (COL["upper_predictive_band"], "median")
             agg = df.groupby(COL["percentile"]).agg(**agg_d).reset_index()
+
+            # ── Median observed per percentile (for hover error %) ────
+            obs_only = df.dropna(subset=[COL["observed_consumption"]])
+            if len(obs_only) > 0:
+                obs_med_by_pct = (
+                    obs_only.groupby(COL["percentile"])[COL["observed_consumption"]]
+                    .median()
+                    .rename("obs_med")
+                    .reset_index()
+                )
+                agg = agg.merge(obs_med_by_pct, on=COL["percentile"], how="left")
+            else:
+                agg["obs_med"] = np.nan
+
+            with np.errstate(divide="ignore", invalid="ignore"):
+                agg["err_pct"] = np.where(
+                    agg["obs_med"].notna() & (agg["obs_med"] != 0),
+                    100.0 * (agg["pred_med"] - agg["obs_med"]) / agg["obs_med"],
+                    np.nan,
+                )
+
             if show_ci and has_lo and has_hi:
                 ca = agg.dropna(subset=["ci_lo", "ci_hi"])
                 if len(ca) > 0:
@@ -978,6 +1015,17 @@ with tab_explorer:
                 marker=dict(size=4, color=mc_col),
                 line=dict(color=mc_col, width=2.5),
                 name=f"Predicted Median ({selected_model})",
+                customdata=np.stack([
+                    agg["pred_med"].values,
+                    agg["obs_med"].values,
+                    agg["err_pct"].values,
+                ], axis=-1),
+                hovertemplate=(
+                    "<b>Percentile %{x}</b><br>"
+                    "Predicted (median): %{customdata[0]:.3f} $/day<br>"
+                    "Observed (median): %{customdata[1]:.3f} $/day<br>"
+                    "Pred − Obs: %{customdata[2]:+.1f}%<extra></extra>"
+                ),
             ))
             if is_validated:
                 obs_r = df.dropna(subset=[COL["observed_consumption"]])
@@ -985,12 +1033,28 @@ with tab_explorer:
                     ao = obs_r.groupby(COL["percentile"]).agg(
                         med=(COL["observed_consumption"], "median")
                     ).reset_index()
+                    # Merge predicted median + err_pct for the hover
+                    ao = ao.merge(
+                        agg[[COL["percentile"], "pred_med", "err_pct"]],
+                        on=COL["percentile"], how="left",
+                    )
                     fig.add_trace(go.Scatter(
                         x=ao[COL["percentile"]], y=ao["med"],
                         mode="lines+markers",
                         marker=dict(size=4, color=OBS_COLOUR, symbol="diamond"),
                         line=dict(color=OBS_COLOUR, width=2, dash="dot"),
                         name="Observed Median",
+                        customdata=np.stack([
+                            ao["pred_med"].values,
+                            ao["med"].values,
+                            ao["err_pct"].values,
+                        ], axis=-1),
+                        hovertemplate=(
+                            "<b>Percentile %{x}</b><br>"
+                            "Observed (median): %{customdata[1]:.3f} $/day<br>"
+                            "Predicted (median): %{customdata[0]:.3f} $/day<br>"
+                            "Pred − Obs: %{customdata[2]:+.1f}%<extra></extra>"
+                        ),
                     ))
 
         tp = [selected_name if selected_name != "All Countries" else "All Countries"]
@@ -1001,7 +1065,7 @@ with tab_explorer:
         fig.update_layout(
             template="plotly_white", height=560,
             xaxis_title="Percentile",
-            yaxis_title="Consumption per Capita (2017 PPP $/day)",
+            yaxis_title="Consumption per Capita (2021 PPP $/day)",
             legend=dict(orientation="h", y=-0.12, x=0),
             margin=dict(l=60, r=20, t=50, b=70),
             title=dict(text=" — ".join(tp), font=dict(size=14, color=ESPRESSO)),
@@ -1232,8 +1296,8 @@ with tab_performance:
         ))
         fig_s.update_layout(
             template="plotly_white", height=600,
-            xaxis_title="Observed (2017 PPP $/day)",
-            yaxis_title="Predicted (2017 PPP $/day)",
+            xaxis_title="Observed (2021 PPP $/day)",
+            yaxis_title="Predicted (2021 PPP $/day)",
             legend=dict(x=0.02, y=0.98),
             margin=dict(l=60, r=20, t=30, b=60),
         )
