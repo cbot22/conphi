@@ -949,10 +949,10 @@ with tab_explorer:
                 customdata=np.stack([pct, pred, obs, lo, hi, err_pct], axis=-1),
                 hovertemplate=(
                     "<b>Percentile %{customdata[0]:.0f}</b><br>"
-                    "Predicted: %{customdata[1]:.3f} $/day<br>"
-                    "Observed: %{customdata[2]:.3f} $/day<br>"
-                    "Lower CI: %{customdata[3]:.3f}<br>"
-                    "Upper CI: %{customdata[4]:.3f}<br>"
+                    "Predicted: %{customdata[1]:.2f} $/day<br>"
+                    "Observed: %{customdata[2]:.2f} $/day<br>"
+                    "Lower CI: %{customdata[3]:.2f}<br>"
+                    "Upper CI: %{customdata[4]:.2f}<br>"
                     "Pred − Obs: %{customdata[5]:+.1f}%<extra></extra>"
                 ),
             ))
@@ -967,8 +967,8 @@ with tab_explorer:
                         customdata=np.stack([pct[om], pred[om], obs[om], err_pct[om]], axis=-1),
                         hovertemplate=(
                             "<b>Percentile %{customdata[0]:.0f}</b><br>"
-                            "Observed: %{customdata[2]:.3f} $/day<br>"
-                            "Predicted: %{customdata[1]:.3f} $/day<br>"
+                            "Observed: %{customdata[2]:.2f} $/day<br>"
+                            "Predicted: %{customdata[1]:.2f} $/day<br>"
                             "Pred − Obs: %{customdata[3]:+.1f}%<extra></extra>"
                         ),
                     ))
@@ -1022,8 +1022,8 @@ with tab_explorer:
                 ], axis=-1),
                 hovertemplate=(
                     "<b>Percentile %{x}</b><br>"
-                    "Predicted (median): %{customdata[0]:.3f} $/day<br>"
-                    "Observed (median): %{customdata[1]:.3f} $/day<br>"
+                    "Predicted (median): %{customdata[0]:.2f} $/day<br>"
+                    "Observed (median): %{customdata[1]:.2f} $/day<br>"
                     "Pred − Obs: %{customdata[2]:+.1f}%<extra></extra>"
                 ),
             ))
@@ -1051,8 +1051,8 @@ with tab_explorer:
                         ], axis=-1),
                         hovertemplate=(
                             "<b>Percentile %{x}</b><br>"
-                            "Observed (median): %{customdata[1]:.3f} $/day<br>"
-                            "Predicted (median): %{customdata[0]:.3f} $/day<br>"
+                            "Observed (median): %{customdata[1]:.2f} $/day<br>"
+                            "Predicted (median): %{customdata[0]:.2f} $/day<br>"
                             "Pred − Obs: %{customdata[2]:+.1f}%<extra></extra>"
                         ),
                     ))
@@ -1839,7 +1839,7 @@ with tab_performance:
             f'<span class="metric-badge"><span class="label">Rising </span>'
             f'<span class="value">{n_rising:,}</span></span>'
             f'<span class="metric-badge"><span class="label">Median % </span>'
-            f'<span class="value">{median_pct:+.2f}%</span></span>'
+            f'<span class="value">{median_pct:+.1f}%</span></span>'
             f'<span class="metric-badge"><span class="label">Pctiles </span>'
             f'<span class="value">{pct_range[0]}–{pct_range[1]}</span></span>'
         )
@@ -1858,10 +1858,10 @@ with tab_performance:
         # per-country context (anchor year + dt) that WASE doesn't.
         hover_template = (
             "<b>%{y}</b><br>"
-            "Change: %{x:+.2f}%<br>"
+            "Change: %{x:+.1f}%<br>"
             "Period: %{customdata[0]}<br>"
-            "Start: %{customdata[1]:.3f} $/day<br>"
-            "End: %{customdata[2]:.3f} $/day<br>"
+            "Start: %{customdata[1]:.2f} $/day<br>"
+            "End: %{customdata[2]:.2f} $/day<br>"
             "Region: %{customdata[3]}<br>"
             "Income: %{customdata[4]}"
         )
