@@ -1605,6 +1605,333 @@ with tab_performance:
     else:
         st.info(f"Country MAE data not found. Run `conphi_v1_{eval_model.lower()}_diagnostics.py` first.")
 
+    # ============================================================
+    # PROJECTED CONSUMPTION IMPACT — COUNTRIES WITH LARGEST DECLINES
+    # ============================================================
+    #
+    # For USE:   user chooses between "Since last survey" (anchor → latest
+    #            available prediction year) and "2025 → 2027".
+    # For WASE:  only "2025 → 2027" is available (no anchor concept).
+    #
+    # All data is computed on-the-fly from `fact`; no upstream metric
+    # calculation changes required. Sidebar filters (WFP, region, sub-region,
+    # country, dt cap) are respected. The percentile range slider
+    # (pct_range) determines which percentiles are aggregated into the
+    # per-country consumption value (median is used — robust to outlier
+    # percentiles).
+    # ============================================================
+    st.markdown(
+        f'<div class="section-header">{eval_model} — Projected Consumption Impact by Country</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="section-sub">'
+        'Countries ranked by projected change in predicted consumption per capita '
+        'across the selected comparison period. Negative values indicate declining '
+        'consumption projections. Bar colour encodes World Bank region. '
+        'Aggregation across percentiles uses the median over the percentile range '
+        'set in the sidebar — narrow this to e.g. p5–p20 to focus on the bottom '
+        'of the distribution.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Controls ─────────────────────────────────────────────
+    impact_c1, impact_c2, impact_c3 = st.columns([1.2, 1, 1])
+    with impact_c1:
+        if eval_model == "USE":
+            impact_mode = st.radio(
+                "Comparison period",
+                ["Since last survey", "2025 → 2027"],
+                index=0, horizontal=True,
+                key="impact_mode_use",
+            )
+        else:
+            impact_mode = "2025 → 2027"
+            st.markdown(
+                '<div style="font-size:0.78rem;color:#56798D;margin-top:0.2rem;">'
+                '<strong>Comparison period:</strong> 2025 → 2027  '
+                '<em>(WASE has no survey anchor)</em></div>',
+                unsafe_allow_html=True,
+            )
+    with impact_c2:
+        impact_n = st.slider(
+            "Countries displayed", min_value=5, max_value=60,
+            value=20, step=1, key="impact_n",
+        )
+    with impact_c3:
+        impact_direction = st.radio(
+            "Show",
+            ["Worst (biggest declines)", "Best (biggest gains)"],
+            index=0, horizontal=False, key="impact_direction",
+        )
+
+    # ── Build the data ───────────────────────────────────────
+    # Start from the fact table restricted to the current model and
+    # prediction type, then apply the standard sidebar filters.
+    _impact_base = fact[
+        (fact[COL["model_type"]]      == eval_model) &
+        (fact[COL["prediction_type"]] == selected_pred)
+    ].copy()
+    # Percentile range
+    _impact_base = _impact_base[
+        (_impact_base[COL["percentile"]] >= pct_range[0]) &
+        (_impact_base[COL["percentile"]] <= pct_range[1])
+    ]
+    # WFP scope
+    if selected_wfp == "WFP Countries":
+        _impact_base = _impact_base[_impact_base[COL["wfp_country"]] == "Yes"]
+    # Region / sub-region filters
+    if selected_region != "All" and COL["region"] in _impact_base.columns:
+        _impact_base = _impact_base[_impact_base[COL["region"]] == selected_region]
+    if selected_subregion != "All" and COL["sub_region"] in _impact_base.columns:
+        _impact_base = _impact_base[_impact_base[COL["sub_region"]] == selected_subregion]
+    # dt cap (USE only — WASE has no dt)
+    if selected_max_dt is not None and COL["dt"] in _impact_base.columns:
+        _impact_base = _impact_base[
+            _impact_base[COL["dt"]].isna() | (_impact_base[COL["dt"]] <= selected_max_dt)
+        ]
+
+    impact_df = pd.DataFrame()
+    impact_note = None  # populated if the view has a quirk to flag
+
+    if eval_model == "USE" and impact_mode == "Since last survey":
+        # ── Anchor (log_cons_anchor) → latest available prediction year
+        # For each country we want: the anchor log-consumption as the
+        # baseline, and the most recent predicted consumption per
+        # percentile as the end point.
+        anchor_col = "Anchor Log Consumption"
+        if anchor_col not in _impact_base.columns:
+            st.info(
+                "`Anchor Log Consumption` column not found in fact table — "
+                "the 'Since last survey' view requires the updated USE pipeline. "
+                "Switch to '2025 → 2027' or update the report prep."
+            )
+        else:
+            # For each iso, pick the latest prediction_year row per percentile
+            # (most recent forecast that exists for this country).
+            _latest_per_iso = (
+                _impact_base
+                .dropna(subset=[COL["predicted_consumption"], anchor_col])
+                .sort_values([COL["country_code"], COL["percentile"], COL["prediction_year"]])
+                .groupby([COL["country_code"], COL["percentile"]], as_index=False)
+                .tail(1)
+            )
+            if len(_latest_per_iso) > 0:
+                # Per-country aggregate across the percentile range (median)
+                by_iso = (
+                    _latest_per_iso
+                    .groupby(COL["country_code"])
+                    .agg(
+                        start_log = (anchor_col,                      "median"),
+                        end_pred  = (COL["predicted_consumption"],    "median"),
+                        end_year  = (COL["prediction_year"],          "max"),
+                        anchor_yr = (COL["anchor_year"],              "max"),
+                        dt_val    = (COL["dt"],                       "max"),
+                        region    = (COL["region"],                   "first"),
+                        income    = (COL["income_group"],             "first"),
+                    )
+                    .reset_index()
+                )
+                by_iso["start_cons"] = safe_exp(by_iso["start_log"])
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    by_iso["pct_change"] = np.where(
+                        (by_iso["start_cons"] > 0) & by_iso["end_pred"].notna(),
+                        100.0 * (by_iso["end_pred"] - by_iso["start_cons"]) / by_iso["start_cons"],
+                        np.nan,
+                    )
+                impact_df = by_iso.dropna(subset=["pct_change"]).copy()
+                impact_df["country_name"] = impact_df[COL["country_code"]].map(
+                    code_to_name
+                ).fillna(impact_df[COL["country_code"]])
+                impact_df["period_label"] = (
+                    impact_df["anchor_yr"].fillna(-1).astype(int).astype(str)
+                    + " → "
+                    + impact_df["end_year"].fillna(-1).astype(int).astype(str)
+                )
+                impact_note = (
+                    "Each country compares its anchor survey year against its "
+                    "most recent available prediction year — so the comparison "
+                    "window varies by country. Hover to see each country's specific "
+                    "window and dt."
+                )
+
+    else:
+        # ── 2025 → 2027 (both USE and WASE) ─────────────────
+        start_year, end_year = 2025, 2027
+        years_available = sorted(_impact_base[COL["prediction_year"]].dropna().astype(int).unique())
+        missing_years = [y for y in (start_year, end_year) if y not in years_available]
+        if missing_years:
+            st.info(
+                f"Prediction year(s) {missing_years} not available for "
+                f"{eval_model} with Prediction Type = {selected_pred}. "
+                f"Available years: {years_available[:12]}{'…' if len(years_available) > 12 else ''}. "
+                "Try switching Prediction Type (forecast variants carry later years)."
+            )
+        else:
+            two_years = _impact_base[
+                _impact_base[COL["prediction_year"]].isin([start_year, end_year])
+            ].copy()
+            # Median predicted consumption per (iso, year) across the
+            # selected percentile range.
+            agg = (
+                two_years
+                .groupby([COL["country_code"], COL["prediction_year"]])
+                .agg(
+                    pred_med = (COL["predicted_consumption"], "median"),
+                    region   = (COL["region"],                "first"),
+                    income   = (COL["income_group"],          "first"),
+                )
+                .reset_index()
+            )
+            pivot = agg.pivot(
+                index=COL["country_code"],
+                columns=COL["prediction_year"],
+                values="pred_med",
+            )
+            # Keep only countries with both years present
+            pivot = pivot.dropna(subset=[start_year, end_year])
+            if len(pivot) > 0:
+                meta = agg.drop_duplicates(COL["country_code"]).set_index(COL["country_code"])
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    pct_change = np.where(
+                        pivot[start_year] > 0,
+                        100.0 * (pivot[end_year] - pivot[start_year]) / pivot[start_year],
+                        np.nan,
+                    )
+                impact_df = pd.DataFrame({
+                    COL["country_code"]: pivot.index,
+                    "start_cons":        pivot[start_year].values,
+                    "end_pred":          pivot[end_year].values,
+                    "pct_change":        pct_change,
+                })
+                impact_df["region"]       = impact_df[COL["country_code"]].map(meta["region"])
+                impact_df["income"]       = impact_df[COL["country_code"]].map(meta["income"])
+                impact_df["country_name"] = impact_df[COL["country_code"]].map(
+                    code_to_name
+                ).fillna(impact_df[COL["country_code"]])
+                impact_df["period_label"] = f"{start_year} → {end_year}"
+                impact_df["anchor_yr"]    = np.nan
+                impact_df["end_year"]     = end_year
+                impact_df["dt_val"]       = np.nan
+                impact_df = impact_df.dropna(subset=["pct_change"]).copy()
+
+    # ── Render ───────────────────────────────────────────────
+    if len(impact_df) == 0:
+        st.info(
+            "No countries available for the current selection. Try loosening "
+            "sidebar filters, switching Prediction Type, or adjusting the "
+            "percentile range."
+        )
+    else:
+        ascending = impact_direction.startswith("Worst")
+        sorted_df = impact_df.sort_values("pct_change", ascending=ascending).head(impact_n)
+
+        # Badges summarising the slice
+        n_declining = int((impact_df["pct_change"] < 0).sum())
+        n_rising    = int((impact_df["pct_change"] > 0).sum())
+        median_pct  = float(np.nanmedian(impact_df["pct_change"]))
+        badge_imp = (
+            f'<span class="metric-badge"><span class="label">Countries </span>'
+            f'<span class="value">{len(impact_df):,}</span></span>'
+            f'<span class="metric-badge"><span class="label">Declining </span>'
+            f'<span class="value">{n_declining:,}</span></span>'
+            f'<span class="metric-badge"><span class="label">Rising </span>'
+            f'<span class="value">{n_rising:,}</span></span>'
+            f'<span class="metric-badge"><span class="label">Median % </span>'
+            f'<span class="value">{median_pct:+.2f}%</span></span>'
+            f'<span class="metric-badge"><span class="label">Pctiles </span>'
+            f'<span class="value">{pct_range[0]}–{pct_range[1]}</span></span>'
+        )
+        st.markdown(badge_imp, unsafe_allow_html=True)
+        if impact_note is not None:
+            st.caption(impact_note)
+        st.markdown("")
+
+        # Bar chart — coloured by region
+        bar_colours = [
+            WB_PALETTE.get(r, eval_colour)
+            for r in sorted_df["region"].fillna("Unknown")
+        ]
+
+        # Build hover per-row because USE "since last survey" has extra
+        # per-country context (anchor year + dt) that WASE doesn't.
+        hover_template = (
+            "<b>%{y}</b><br>"
+            "Change: %{x:+.2f}%<br>"
+            "Period: %{customdata[0]}<br>"
+            "Start: %{customdata[1]:.3f} $/day<br>"
+            "End: %{customdata[2]:.3f} $/day<br>"
+            "Region: %{customdata[3]}<br>"
+            "Income: %{customdata[4]}"
+        )
+        custom = np.stack([
+            sorted_df["period_label"].fillna("—").values,
+            sorted_df["start_cons"].values,
+            sorted_df["end_pred"].values,
+            sorted_df["region"].fillna("Unknown").values,
+            sorted_df["income"].fillna("Unknown").values,
+        ], axis=1)
+
+        if eval_model == "USE" and impact_mode == "Since last survey":
+            hover_template += "<br>dt: %{customdata[5]:.0f} yrs<extra></extra>"
+            custom = np.concatenate([
+                custom,
+                sorted_df["dt_val"].fillna(-1).values.reshape(-1, 1).astype(float),
+            ], axis=1)
+        else:
+            hover_template += "<extra></extra>"
+
+        fig_impact = go.Figure(go.Bar(
+            x=sorted_df["pct_change"].values,
+            y=sorted_df["country_name"].values,
+            orientation="h",
+            marker_color=bar_colours,
+            customdata=custom,
+            hovertemplate=hover_template,
+        ))
+        # Zero reference line
+        fig_impact.add_vline(
+            x=0, line=dict(dash="dash", color="grey", width=1.2),
+        )
+        fig_impact.update_layout(
+            template="plotly_white",
+            height=max(420, impact_n * 24),
+            xaxis_title="Projected change in predicted consumption per capita (%)",
+            yaxis=dict(autorange="reversed"),
+            margin=dict(l=200, r=30, t=30, b=60),
+            showlegend=False,
+        )
+        st.plotly_chart(fig_impact, use_container_width=True)
+
+        with st.expander("View impact data"):
+            show_cols = [
+                "country_name", COL["country_code"], "period_label",
+                "start_cons", "end_pred", "pct_change",
+                "region", "income",
+            ]
+            if eval_model == "USE" and impact_mode == "Since last survey":
+                show_cols.insert(3, "anchor_yr")
+                show_cols.insert(4, "end_year")
+                show_cols.insert(5, "dt_val")
+            display_df = sorted_df[[c for c in show_cols if c in sorted_df.columns]].copy()
+            display_df = display_df.rename(columns={
+                "country_name": "Country",
+                "period_label": "Period",
+                "start_cons":   "Start $/day",
+                "end_pred":     "End $/day",
+                "pct_change":   "% Change",
+                "region":       "Region",
+                "income":       "Income Group",
+                "anchor_yr":    "Anchor Year",
+                "end_year":     "End Year",
+                "dt_val":       "dt (yrs)",
+            })
+            st.dataframe(
+                display_df, use_container_width=True,
+                hide_index=True, height=min(400, 40 + 28 * len(display_df)),
+            )
+
     if eval_model == "USE" and res_df is not None and len(res_df) > 0 and "dt" in res_df.columns:
         st.markdown(
             '<div class="section-header">USE — Performance by dt (Years Since Survey)</div>',
