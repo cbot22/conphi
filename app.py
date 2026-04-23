@@ -1476,6 +1476,328 @@ with tab_performance:
             )
             st.plotly_chart(fig_y, use_container_width=True)
 
+    # ============================================================
+    # PERFORMANCE BY MAGNITUDE OF OBSERVED CHANGE
+    # ============================================================
+    #
+    # Diagnostic: does model accuracy depend on how much the outcome
+    # actually shifted between observed surveys? This is outcome-centric
+    # (x = change in realised consumption, not in a model input), which
+    # sidesteps the dt confounding problem in USE where longer horizons
+    # mechanically accumulate both more growth AND more forecast noise.
+    #
+    # USE : x = obs_log(target) − anchor_log_cons     (anchor → validation)
+    # WASE: x = obs_log(year_t)  − obs_log(year_prev) (previous validated survey for that country)
+    #
+    # For USE we additionally offer dt-band stratification so the reader
+    # can see whether the curve's shape reflects change-magnitude per se
+    # or is entrained with horizon length.
+    # ============================================================
+    st.markdown(
+        f'<div class="section-header">{eval_model} — Performance by Magnitude of Observed Change</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="section-sub">'
+        'Error metric plotted against the magnitude of the realised change in '
+        'log-consumption between the anchor/prior-survey observation and the '
+        'validated observation. An outcome-centric diagnostic: rather than asking '
+        'whether the model performs well when GDP growth was large, it asks whether '
+        'the model tracks reality across the full spectrum of distributional shifts '
+        'that actually occurred.'
+        + (
+            ' For USE, this reframing also sidesteps the mechanical confounding '
+            'between dt and cumulative growth — a curve that looks bad at large '
+            '|change| under a growth-based x-axis may largely reflect longer dt '
+            'rather than model failure at rapid change per se.'
+            if eval_model == "USE"
+            else ' WASE has no survey anchor, so "change" here is the year-over-year '
+                 'shift between a country\'s consecutive validated surveys.'
+        )
+        + ' Bins with fewer than 20 observations are suppressed to keep the curve '
+        'from swinging on a handful of points.'
+        + '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Controls ─────────────────────────────────────────────
+    chg_c1, chg_c2, chg_c3 = st.columns([1, 1, 1.2])
+    # Note: R² excluded from bin-level metrics because it depends on the
+    # within-bin spread of observed values, which is mechanically compressed
+    # when we condition on a narrow range of outcome change. It would
+    # mislead more than inform.
+    CHG_METRIC_OPTIONS = ["MAE (Log)", "Bias (Log)", "RMSE (Log)", "MAPE %"]
+    with chg_c1:
+        chg_metric = st.selectbox(
+            "Metric", CHG_METRIC_OPTIONS, index=0, key="chg_metric",
+        )
+    with chg_c2:
+        bin_width = st.select_slider(
+            "Bin width (log units)",
+            options=[0.025, 0.05, 0.075, 0.10, 0.15, 0.20],
+            value=0.05, key="chg_bin_width",
+        )
+    with chg_c3:
+        if eval_model == "USE":
+            chg_stratify = st.radio(
+                "Stratify by dt",
+                ["Single curve", "dt bands (1–2 / 3–5 / 6+ yrs)"],
+                index=0, horizontal=False, key="chg_stratify_use",
+            )
+        else:
+            chg_stratify = "Single curve"
+            st.caption(
+                "WASE has no dt — a single outcome-change curve is the "
+                "natural diagnostic."
+            )
+
+    chg_metric_col = METRIC_MAP[chg_metric]
+
+    # ── Build change-vs-error data from diag residuals ───────
+    # (res_df is already the filtered diagnostic residuals frame)
+    change_df = None
+    if res_df is not None and len(res_df) > 0 and "resid_log" in res_df.columns:
+        if eval_model == "USE":
+            # Need anchor_log_cons + obs_log; reuse persistence builder for fallback
+            _chg_raw = _build_persistence(res_df, fact).copy()
+            _needed  = {"anchor_log_cons", "obs_log", "pred_log", "resid_log"}
+            if _needed.issubset(_chg_raw.columns):
+                _chg = _chg_raw.dropna(subset=[
+                    "anchor_log_cons", "obs_log", "pred_log", "resid_log"
+                ]).copy()
+                # x = observed change from anchor to validation
+                _chg["obs_change_log"] = _chg["obs_log"] - _chg["anchor_log_cons"]
+                change_df = _chg
+        else:
+            # WASE: need to construct year-over-year changes. For each country
+            # and percentile, sort observed surveys by focal_year and compute
+            # the change from the previous validated year.
+            _need = {"iso", "focal_year", "percentile", "obs_log", "pred_log", "resid_log"}
+            if _need.issubset(res_df.columns):
+                _w = res_df.dropna(subset=["obs_log", "pred_log", "resid_log"]).copy()
+                _w = _w.sort_values(["iso", "percentile", "focal_year"])
+                _w["prev_obs_log"] = (
+                    _w.groupby(["iso", "percentile"])["obs_log"].shift(1)
+                )
+                _w["obs_change_log"] = _w["obs_log"] - _w["prev_obs_log"]
+                _w = _w.dropna(subset=["obs_change_log"])
+                if len(_w) > 0:
+                    change_df = _w
+
+    if change_df is None or len(change_df) == 0:
+        st.info(
+            f"Insufficient data to build the change-magnitude view for {eval_model} "
+            "under the current sidebar filters."
+        )
+    else:
+        # ── Build bin assignments with a minimum-count guardrail ─
+        MIN_BIN_N = 20
+
+        def _bin_and_summarise(df_in, label=None):
+            """Return (bin_centers, metric_values, n_obs) after dropping sparse bins."""
+            df2 = df_in.copy()
+            x   = df2["obs_change_log"].values
+            # Symmetric bins centred on 0
+            x_abs_max = float(np.nanmax(np.abs(x))) if len(x) else 0.5
+            x_abs_max = max(x_abs_max, bin_width * 2)  # at least a couple of bins
+            edges     = np.arange(
+                -np.ceil(x_abs_max / bin_width) * bin_width,
+                 np.ceil(x_abs_max / bin_width) * bin_width + bin_width / 2,
+                 bin_width,
+            )
+            df2["_bin"] = pd.cut(x, bins=edges, include_lowest=True)
+
+            rows = []
+            for binval, grp in df2.groupby("_bin", observed=True):
+                if len(grp) < MIN_BIN_N:
+                    continue
+                rl  = grp["resid_log"].values
+                ol  = grp["obs_log"].values
+                pl  = grp["pred_log"].values
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    ape = np.where(
+                        np.abs(ol) > 1e-8,
+                        np.abs((safe_exp(pl) - safe_exp(ol)) / safe_exp(ol)),
+                        np.nan,
+                    )
+                ss_res = np.sum(rl ** 2)
+                ss_tot = np.sum((ol - ol.mean()) ** 2)
+                centre = float(binval.mid)
+                rows.append({
+                    "bin_centre":  centre,
+                    "bin_lo":      float(binval.left),
+                    "bin_hi":      float(binval.right),
+                    "n_obs":       int(len(grp)),
+                    "mae_log":     float(np.mean(np.abs(rl))),
+                    "rmse_log":    float(np.sqrt(np.mean(rl ** 2))),
+                    "bias_log":    float(rl.mean()),
+                    "r2_log":      float(1 - ss_res / ss_tot) if ss_tot > 1e-8 else np.nan,
+                    "mape_pct":    float(np.nanmean(ape) * 100),
+                    "label":       label or "All pairs",
+                })
+            return pd.DataFrame(rows)
+
+        # ── Build per-stratum curves ─────────────────────────
+        curves = []
+        if chg_stratify.startswith("dt bands") and eval_model == "USE" and "dt" in change_df.columns:
+            dt_bands = [
+                ("1–2 yrs", (1, 2)),
+                ("3–5 yrs", (3, 5)),
+                ("6+ yrs",  (6, 999)),
+            ]
+            for lbl, (lo, hi) in dt_bands:
+                sub = change_df[
+                    (change_df["dt"] >= lo) & (change_df["dt"] <= hi)
+                ]
+                if len(sub) < MIN_BIN_N:
+                    continue
+                curves.append(_bin_and_summarise(sub, label=lbl))
+        else:
+            curves.append(_bin_and_summarise(change_df, label="All pairs"))
+
+        curves = [c for c in curves if len(c) > 0]
+
+        if len(curves) == 0:
+            st.info(
+                "No bins reached the minimum sample size of 20 observations "
+                "under the current filters. Try widening the bin width or "
+                "loosening sidebar filters."
+            )
+        else:
+            # ── Summary badges ────────────────────────────────
+            n_pairs      = len(change_df)
+            n_ctries_chg = change_df["iso"].nunique() if "iso" in change_df.columns else 0
+            chg_min      = float(np.nanmin(change_df["obs_change_log"])) * 100
+            chg_max      = float(np.nanmax(change_df["obs_change_log"])) * 100
+            chg_median   = float(np.nanmedian(change_df["obs_change_log"])) * 100
+            badge_chg = (
+                f'<span class="metric-badge"><span class="label">Validated Pairs </span>'
+                f'<span class="value">{n_pairs:,}</span></span>'
+                f'<span class="metric-badge"><span class="label">Countries </span>'
+                f'<span class="value">{n_ctries_chg}</span></span>'
+                f'<span class="metric-badge"><span class="label">Change Range </span>'
+                f'<span class="value">{chg_min:+.1f}% to {chg_max:+.1f}%</span></span>'
+                f'<span class="metric-badge"><span class="label">Median Change </span>'
+                f'<span class="value">{chg_median:+.1f}%</span></span>'
+            )
+            st.markdown(badge_chg, unsafe_allow_html=True)
+            st.markdown("")
+
+            # ── Figure: two-row subplot
+            #   Row 1: histogram of x so reader sees where sample density lies
+            #   Row 2: metric curve(s)
+            # ─────────────────────────────────────────────────
+            from plotly.subplots import make_subplots
+
+            fig_chg = make_subplots(
+                rows=2, cols=1, shared_xaxes=True,
+                row_heights=[0.25, 0.75],
+                vertical_spacing=0.05,
+                subplot_titles=("Sample density", chg_metric),
+            )
+
+            # Top: histogram of the raw x values (all pairs, not filtered by bin min)
+            _hist_abs = float(np.nanmax(np.abs(change_df["obs_change_log"].values)))
+            _hist_abs = max(_hist_abs, bin_width * 4)
+            fig_chg.add_trace(go.Histogram(
+                x=change_df["obs_change_log"].values,
+                xbins=dict(
+                    start=-np.ceil(_hist_abs / bin_width) * bin_width,
+                    end=   np.ceil(_hist_abs / bin_width) * bin_width,
+                    size=bin_width,
+                ),
+                marker=dict(color=LIGHT_SLATE, line=dict(width=0)),
+                opacity=0.8,
+                name="n pairs",
+                hovertemplate=(
+                    "Change: %{x:+.1%}<br>"
+                    "n pairs: %{y:,}<extra></extra>"
+                ),
+                showlegend=False,
+            ), row=1, col=1)
+
+            # Bottom: one line per stratum
+            _stratum_colours = {
+                "All pairs": eval_colour,
+                "1–2 yrs":   "#2ca02c",
+                "3–5 yrs":   "#ff7f0e",
+                "6+ yrs":    "#d62728",
+            }
+            for cdf in curves:
+                lbl = cdf["label"].iloc[0]
+                c   = _stratum_colours.get(lbl, eval_colour)
+                cdf_sorted = cdf.sort_values("bin_centre")
+                fig_chg.add_trace(go.Scatter(
+                    x=cdf_sorted["bin_centre"].values,
+                    y=cdf_sorted[chg_metric_col].values,
+                    mode="lines+markers",
+                    line=dict(color=c, width=2.5),
+                    marker=dict(size=8, color=c),
+                    name=lbl,
+                    customdata=np.stack([
+                        cdf_sorted["n_obs"].values,
+                        cdf_sorted["bin_lo"].values,
+                        cdf_sorted["bin_hi"].values,
+                    ], axis=1),
+                    hovertemplate=(
+                        f"<b>{lbl}</b><br>"
+                        "Change bin: %{customdata[1]:+.1%} to %{customdata[2]:+.1%}<br>"
+                        f"{chg_metric}: %{{y:.4f}}<br>"
+                        "n obs: %{customdata[0]:,}<extra></extra>"
+                    ),
+                ), row=2, col=1)
+
+            # Zero reference line on the metric panel only
+            if chg_metric_col == "bias_log":
+                fig_chg.add_hline(
+                    y=0, line=dict(dash="dash", color="grey", width=1),
+                    row=2, col=1,
+                )
+            # Vertical reference line at x=0 on both panels
+            for r in (1, 2):
+                fig_chg.add_vline(
+                    x=0, line=dict(dash="dot", color="grey", width=1),
+                    row=r, col=1,
+                )
+
+            fig_chg.update_xaxes(
+                title_text="Observed change in log consumption (previous → validated)",
+                tickformat="+.0%", row=2, col=1,
+            )
+            fig_chg.update_yaxes(title_text="n pairs", row=1, col=1)
+            fig_chg.update_yaxes(title_text=chg_metric, row=2, col=1)
+            fig_chg.update_layout(
+                template="plotly_white",
+                height=540,
+                legend=dict(orientation="h", y=-0.12, x=0.0),
+                margin=dict(l=60, r=20, t=50, b=60),
+                showlegend=(len(curves) > 1),
+            )
+
+            st.plotly_chart(fig_chg, use_container_width=True)
+
+            with st.expander("View change-magnitude bin table"):
+                tbl = pd.concat(curves, ignore_index=True)
+                tbl = tbl[[
+                    "label", "bin_lo", "bin_hi", "n_obs",
+                    "mae_log", "rmse_log", "bias_log", "r2_log", "mape_pct",
+                ]].rename(columns={
+                    "label":    "Stratum",
+                    "bin_lo":   "Bin Low",
+                    "bin_hi":   "Bin High",
+                    "n_obs":    "n Obs",
+                    "mae_log":  "MAE (Log)",
+                    "rmse_log": "RMSE (Log)",
+                    "bias_log": "Bias (Log)",
+                    "r2_log":   "R² (Log)",
+                    "mape_pct": "MAPE %",
+                })
+                st.dataframe(
+                    tbl.sort_values(["Stratum", "Bin Low"]),
+                    use_container_width=True, hide_index=True,
+                    height=min(400, 40 + 28 * len(tbl)),
+                )
+
     st.markdown(
         f'<div class="section-header">{eval_model} — Residual Distribution by Region</div>',
         unsafe_allow_html=True,
